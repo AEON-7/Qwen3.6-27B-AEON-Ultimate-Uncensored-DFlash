@@ -95,7 +95,6 @@ services:
           --dtype auto \
           --quantization compressed-tensors \
           --kv-cache-dtype auto \
-          --no-async-scheduling \
           --max-model-len 200000 \
           --max-num-seqs 16 \
           --max-num-batched-tokens 32768 \

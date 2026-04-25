@@ -435,38 +435,39 @@ Wielding an uncensored model is genuinely different from wielding an aligned one
 
 ### DGX Spark (GB10 / sm_121a) — measured
 
-Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1`, DFlash spec-decode k=15 via `z-lab/Qwen3.6-27B-DFlash`, `--max-model-len 200000`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.85`. Single-stream, greedy (`temperature=0`), reasoning mode disabled for clean decode-rate measurement.
+Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1`, DFlash spec-decode k=15 via `z-lab/Qwen3.6-27B-DFlash` (drafter pulled 2026-04-25), async scheduling enabled, `--max-model-len 200000`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.85`. Single-stream, greedy (`temperature=0`), reasoning mode disabled for clean decode-rate measurement.
 
 #### Headline single-stream numbers
 
 | Metric | Value |
 |---|---|
-| **Peak decode rate** | **50.5 tok/s** (math word problem; high DFlash acceptance) |
-| **Median decode rate** | **29.5 tok/s** |
+| **Peak decode rate** | **56.2 tok/s** (Code Python; high DFlash acceptance) |
+| **Median decode rate** | **32.1 tok/s** |
 | Min decode rate | 14.4 tok/s (free-form prose; low DFlash acceptance) |
-| **Median TTFT** | **224 ms** |
-| TTFT range | 200 – 282 ms (very tight) |
-| Aggregate over 11-prompt mixed suite | 2,933 tokens in 148.0 s |
+| **Median TTFT** | **350 ms** |
+| TTFT range | 338 – 427 ms |
+| Aggregate over 11-prompt mixed suite | 2,869 tokens in 134.8 s |
 | Success rate | 11 / 11 |
 
 #### By prompt class
 
 | Class | Median tok/s | **Peak tok/s** | Notes |
 |---|---|---|---|
-| **Math** (arithmetic, calculus, word problems) | 39.4 | **50.5** | Best class — short, structured, high DFlash acceptance |
-| **Code** (Python, Rust, SQL) | 35.2 | **40.9** | High DFlash acceptance on syntactic patterns |
-| **Reasoning** (transitive syllogism) | 35.0 | 35.0 | n=1 |
-| Long-form (ZKP exposition) | 17.4 | 17.4 | n=1; KV-cache pressure on long outputs |
-| Security research (SQLi PoCs) | 17.3 | 17.3 | n=1; complied with research framing |
-| Pure decode (256 / 512 tok essays) | 14.9 | 14.9 | Lower DFlash acceptance on free-form prose |
+| **Math** (arithmetic, calculus, word problems) | 41.5 | **51.4** | Best median; short, structured, high DFlash acceptance |
+| **Reasoning** (transitive syllogism) | 40.0 | 40.0 | n=1 |
+| **Code** (Python, Rust, SQL) | 35.7 | **56.2** | New peak — Code Python at 56.2 tok/s |
+| Long-form (ZKP exposition) | 20.8 | 20.8 | n=1; benefits from async iteration overlap |
+| Security research (SQLi PoCs) | 18.6 | 18.6 | n=1; complied with research framing |
+| Pure decode (256 / 512 tok essays) | 15.8 | 15.8 | Lower DFlash acceptance on free-form prose |
 
-> **Peak performance — 50.5 tok/s** on the math word problem (bat-and-ball). DFlash acceptance is near-perfect on the highly-structured "define variables → set up equations → solve" output pattern that closely matches the architecture-matched drafter's training distribution. This is a glimpse of the upper-bound rate this stack delivers when the workload aligns with spec-decode strengths.
+> **Peak performance — 56.2 tok/s** on Code Python with the architecture-matched DFlash drafter. DFlash acceptance is near-perfect on highly-structured outputs (math problems following "define vars → setup → solve", code following idiomatic syntax patterns) that match the drafter's training distribution. This is a glimpse of the upper-bound rate this stack delivers when the workload aligns with spec-decode strengths.
 
 #### What the numbers mean
 
-- **DFlash speculative decoding is acceptance-rate-limited**, not throughput-limited. Math and code prompts hit 35–50 tok/s because the architecture-matched drafter predicts syntactic structure well. Free-form prose drops to ~15 tok/s because acceptance falls below the break-even point and the engine settles toward base decode rate. This is the dense-27B equivalent of the variance the [related 35B-A3B-DFlash deployment](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash) reports (their median 83.9 tok/s, p95 127.5 tok/s, min 41.1 tok/s).
-- **TTFT is rock-stable at ~224 ms** across all prompt sizes — prefill is well-tuned in this image and the FlashInfer 0.6.9rc1 b12x backend is doing its job on sm_121a.
-- **27B dense is a different perf class than 35B-A3B MoE** — the MoE activates ~3 B params per token and lands at ~84 tok/s median; the dense 27B activates all params per token and lands at ~30 tok/s median. Both are in-class for their architecture on GB10.
+- **Async scheduling and the fresh DFlash drafter combined** lifted median throughput +8.8 % and peak throughput +11.3 % vs the v2.1 launch baseline (29.5 / 50.5 → 32.1 / 56.2). The biggest gainers were the longest outputs — long-form +19.5 %, reasoning +14.3 % — because async amortizes scheduler overlap across more decode iterations.
+- **TTFT is ~350 ms** with async scheduling enabled. This is ~125 ms higher than running with `--no-async-scheduling` (which lands at ~224 ms TTFT). The throughput gain is worth the added startup latency for almost any non-trivially-long generation; if you're running sub-100-token interactive Q&A and TTFT matters more than throughput, you can disable async.
+- **DFlash speculative decoding is acceptance-rate-limited**, not throughput-limited. Math and code prompts hit 41–56 tok/s because the architecture-matched drafter predicts syntactic structure well. Free-form prose drops to ~16 tok/s because acceptance falls below the break-even point and the engine settles toward base decode rate. This is the dense-27B equivalent of the variance the [related 35B-A3B-DFlash deployment](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash) reports (their median 83.9 tok/s, p95 127.5 tok/s, min 41.1 tok/s).
+- **27B dense is a different perf class than 35B-A3B MoE** — the MoE activates ~3 B params per token and lands at ~84 tok/s median; the dense 27B activates all params per token and lands at ~32 tok/s median. Both are in-class for their architecture on GB10.
 
 #### Quality verification (every output spot-checked)
 
@@ -498,7 +499,7 @@ Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1`, DFlas
 |---|---|---|
 | `--quantization compressed-tensors` | required | Tells vLLM the checkpoint uses the `compressed-tensors` format (which carries NVFP4 metadata). |
 | `--kv-cache-dtype auto` | required | BF16 KV cache. TurboQuant K8V4 (3.76× compression) is *unsupported* on hybrid attention + Mamba models — vLLM raises a deliberate guard. The 27B-AEON stack stays on uniform BF16 KV until a layer-skipping option ships. |
-| `--no-async-scheduling` | required | Required for clean DFlash spec-decode acceptance metric capture; async scheduling double-counts spec-decode tokens in v0.20.0. |
+| (async scheduling) | **enabled (default)** | Async scheduling overlaps scheduler work with GPU work for ~9–11 % median throughput gain. PR #40662 (in this image) fixed the prior DFlash spec-decode acceptance double-count, so async is now safe to leave at the default-enabled state. **Tradeoff**: TTFT increases by ~125 ms vs `--no-async-scheduling`. Disable only if you're TTFT-sensitive and willing to give up the throughput. |
 | `--max-model-len` | `200000` | 200K context — leaves headroom under the trained 262K. KV cache holds ~219K slots, so `200000 / 219K = 2.87×` max effective concurrency at full context. Raise to 262144 only with a corresponding cut to `--max-num-seqs`. |
 | `--max-num-seqs` | `16` | 16 concurrent sequences. Lower than you'd expect because the DFlash drafter's own KV state and the spec-decode scheduler bookkeeping eat into the unified-memory budget. **Without DFlash, raise to 32–64.** |
 | `--max-num-batched-tokens` | `32768` | Prefill budget. Higher than the v1.2 default (16384) because v2.1 holds prefill stable to this ceiling on GB10. |
