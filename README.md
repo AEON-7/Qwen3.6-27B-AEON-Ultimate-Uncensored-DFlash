@@ -6,7 +6,7 @@
 
 [![BF16](https://img.shields.io/badge/HuggingFace-BF16_(51_GB)-yellow?logo=huggingface)](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored)
 [![NVFP4](https://img.shields.io/badge/HuggingFace-NVFP4_(26_GB)-yellow?logo=huggingface)](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4)
-[![Container](https://img.shields.io/badge/ghcr.io-vllm--spark--omni--q36-blue?logo=docker)](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash/pkgs/container/vllm-spark-omni-q36)
+[![Container](https://img.shields.io/badge/ghcr.io-vllm--aeon--ultimate-blue?logo=docker)](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored/pkgs/container/vllm-aeon-ultimate)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green)](LICENSE)
 
 **Refusals: 0 / 100** &nbsp;·&nbsp; **KL vs base: 0.000492** &nbsp;·&nbsp; **Compression: 49 %** &nbsp;·&nbsp; **Capability: enhanced**
@@ -107,7 +107,7 @@ The empirically observed "capability damage threshold" in the abliteration liter
 
 | Hardware | Recommended release | Notes |
 |---|---|---|
-| **DGX Spark (GB10, sm_121a)** | **NVFP4** | Native FP4 tensor cores. Use the [`vllm-spark-omni-q36`](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash/pkgs/container/vllm-spark-omni-q36) container. Optimized container in development. |
+| **DGX Spark (GB10, sm_121a)** | **NVFP4** | Native FP4 tensor cores. Use the [`vllm-aeon-ultimate:qwen36-v2.1`](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored/pkgs/container/vllm-aeon-ultimate) container — production-tuned for this exact model + DFlash spec decode. |
 | **B100 / B200 (sm_100)** | **NVFP4** | Native FP4 via `tcgen05` / UTCQMMA — fastest hardware for this format. |
 | **RTX PRO 6000 Blackwell (sm_120)** | **NVFP4** | Native FP4 via CUTLASS path. Excellent throughput. |
 | **H100 80 GB (sm_90)** | **BF16** | NVFP4 dequants to BF16 at kernel level — works but no throughput gain. Use BF16 for cleaner code path. |
@@ -119,62 +119,38 @@ The empirically observed "capability damage threshold" in the abliteration liter
 
 ## QuickStart — DGX Spark (NVFP4)
 
-The recommended path for Blackwell-class hardware. Uses the production-stable [`ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2`](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash/pkgs/container/vllm-spark-omni-q36) container with patched CUTLASS NVFP4 kernels for sm_121a.
+The recommended path for Blackwell-class hardware. Uses the production v2.1 image [`ghcr.io/aeon-7/vllm-aeon-ultimate:qwen36-v2.1`](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored/pkgs/container/vllm-aeon-ultimate) — patched CUTLASS NVFP4 kernels for sm_121a, FlashInfer 0.6.9rc1 b12x backend, DFlash speculative decoding via architecture-matched drafter, and the full v1.2 → v2.1 upstream patch series.
 
-### Step 1 — Pull weights
+### Step 1 — Authenticate to HuggingFace and pull both models
 
 ```bash
+hf auth login                                    # one time, paste your HF token
+
 hf download AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4 \
-  --local-dir /opt/models/aeon-ultimate-nvfp4
+  --local-dir ./models/aeon-ultimate-nvfp4
+
+hf download z-lab/Qwen3.6-27B-DFlash \
+  --local-dir ./models/dflash-drafter
 ```
 
-### Step 2 — Drop in the docker-compose.yml
+> The DFlash drafter is auto-gated — first download will prompt you to click-accept the terms (instant approval).
 
-```yaml
-# docker-compose.yml
-services:
-  aeon-ultimate:
-    image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2
-    container_name: aeon-ultimate
-    restart: unless-stopped
-    network_mode: host
-    ipc: host
-    runtime: nvidia
-    environment:
-      TORCH_CUDA_ARCH_LIST: "12.0+PTX"
-      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
-      VLLM_USE_FLASHINFER_MOE_FP4: "0"
-      NVIDIA_VISIBLE_DEVICES: all
-    volumes:
-      - /opt/models/aeon-ultimate-nvfp4:/models/aeon-ultimate:ro
-    command: >
-      vllm serve /models/aeon-ultimate
-      --served-model-name aeon-ultimate
-      --host 0.0.0.0 --port 8000
-      --tensor-parallel-size 1
-      --dtype auto
-      --quantization compressed-tensors
-      --max-model-len 262144
-      --max-num-seqs 64
-      --max-num-batched-tokens 16384
-      --gpu-memory-utilization 0.85
-      --enable-chunked-prefill
-      --no-enable-prefix-caching
-      --load-format safetensors
-      --trust-remote-code
-      --enable-auto-tool-choice
-      --tool-call-parser qwen3_coder
-      --reasoning-parser qwen3
-      --attention-backend flash_attn
-      --mm-encoder-tp-mode data
-      --mm-processor-cache-type shm
-```
+### Step 2 — Use the production docker-compose.yml
+
+The production [`docker-compose.yml`](docker-compose.yml) in this repo is exactly the config used to measure the benchmarks below. Highlights:
+
+- **Image**: `ghcr.io/aeon-7/vllm-aeon-ultimate:qwen36-v2.1`
+- **Speculative decoding**: DFlash, k=15, architecture-matched drafter (`--speculative-config`)
+- **GB10-specific env**: `TORCH_CUDA_ARCH_LIST=12.1a`, `ENABLE_NVFP4_SM100=0`, `VLLM_USE_FLASHINFER_SAMPLER=1`, `NVIDIA_FORWARD_COMPAT=1`
+- **Tuning**: `--max-model-len 200000 --max-num-seqs 16 --max-num-batched-tokens 32768 --gpu-memory-utilization 0.85`
+- **Multimodal**: `--limit-mm-per-prompt '{"image":4,"video":2}' --mm-encoder-tp-mode data --mm-processor-cache-type shm`
+- **Serving**: 4 model aliases (`aeon-ultimate`, `qwen36-ultimate`, `aeon-fast`, `aeon-deep`) all routing to the same engine
 
 ### Step 3 — Start
 
 ```bash
 docker compose up -d
-docker compose logs -f aeon-ultimate    # watch warmup
+docker compose logs -f vllm    # watch warmup; first boot ~90-180 s with DFlash
 ```
 
 ### Step 4 — Test
@@ -190,7 +166,7 @@ curl http://localhost:8000/v1/chat/completions \
   }'
 ```
 
-That's it. OpenAI-compatible endpoint at `http://localhost:8000/v1`.
+OpenAI-compatible endpoint at `http://localhost:8000/v1`. Tool calling, reasoning mode (`<think>` blocks), and multimodal input are all enabled out of the box.
 
 ---
 
@@ -388,7 +364,7 @@ Typical KL divergence vs the BF16 source for recipe-class NVFP4 quantization is 
 On Blackwell-class silicon, NVFP4 runs at **full FP4 tensor-core throughput** through native paths:
 
 - **B100 / B200**: `tcgen05` / UTCQMMA instructions — fastest NVFP4 hardware available.
-- **DGX Spark (GB10 / sm_121a)**: SM121-specific CUTLASS NVFP4 kernels (the [`vllm-spark-omni-q36`](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash/pkgs/container/vllm-spark-omni-q36) container ships these patched in).
+- **DGX Spark (GB10 / sm_121a)**: SM121-specific CUTLASS NVFP4 kernels (the [`vllm-aeon-ultimate`](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored/pkgs/container/vllm-aeon-ultimate) container ships these patched in).
 - **RTX PRO 6000 Blackwell (sm_120)**: standard CUTLASS NVFP4 path.
 
 The GPU does **not** dequantize back to BF16 internally on these paths. You get the speed of true 4-bit compute *and* the accuracy of 16-bit weights at the same time.
@@ -457,53 +433,100 @@ Wielding an uncensored model is genuinely different from wielding an aligned one
 
 ## Performance
 
-### DGX Spark (GB10 / sm_121a)
+### DGX Spark (GB10 / sm_121a) — measured
 
-**🚧 Comprehensive benchmarks coming soon.** Single-stream decode rate, batched throughput at varying concurrency, and TTFT distributions on the production config will be published here once the optimized container completes its tuning pass.
+Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate:qwen36-v2.1`, DFlash spec-decode k=15 via `z-lab/Qwen3.6-27B-DFlash`, `--max-model-len 200000`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.85`. Single-stream, greedy (`temperature=0`), reasoning mode disabled for clean decode-rate measurement.
 
-In the meantime, the related [`Qwen3.6-NVFP4-DFlash`](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash) deployment (35B-A3B MoE, similar quantization recipe, same patched container) measures **~84 tok/s median single-stream** with DFlash speculative decoding on DGX Spark. Expect AEON-Ultimate-27B (dense, no spec-decode) to land in a similar tok/s class — probably modestly lower decode rate, materially lower latency, and substantially better long-context behavior.
+#### Headline single-stream numbers
 
-### Optimized container in development
+| Metric | Value |
+|---|---|
+| **Median decode rate** | **29.5 tok/s** |
+| Min / max decode rate | 14.4 / 50.5 tok/s |
+| **Median TTFT** | **224 ms** |
+| TTFT range | 200 – 282 ms (very tight) |
+| Aggregate over 11-prompt mixed suite | 2,933 tokens in 148.0 s |
+| Success rate | 11 / 11 |
 
-The current production container [`vllm-spark-omni-q36:v1.2`](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash/pkgs/container/vllm-spark-omni-q36) is the recommended deployment path today. A purpose-built optimized container for this model (with tuned CUTLASS kernel selection for Qwen 3.6's specific tensor shapes) is in development; benchmarks above will be re-run on the optimized container when it ships.
+#### By prompt class
+
+| Class | Median tok/s | Notes |
+|---|---|---|
+| **Math** (arithmetic, calculus, word problems) | **39.4** | Best class — short, structured, high DFlash acceptance |
+| **Code** (Python, Rust, SQL) | **35.2** | High DFlash acceptance on syntactic patterns |
+| **Reasoning** (transitive syllogism) | 35.0 | |
+| Long-form (ZKP exposition) | 17.4 | KV-cache pressure on longer outputs |
+| Security research (SQLi PoCs) | 17.3 | Compliant with research framing |
+| Pure decode (256 / 512 tok essays) | 14.9 | Lower DFlash acceptance on free-form prose |
+
+#### What the numbers mean
+
+- **DFlash speculative decoding is acceptance-rate-limited**, not throughput-limited. Math and code prompts hit 35–50 tok/s because the architecture-matched drafter predicts syntactic structure well. Free-form prose drops to ~15 tok/s because acceptance falls below the break-even point and the engine settles toward base decode rate. This is the dense-27B equivalent of the variance the [related 35B-A3B-DFlash deployment](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash) reports (their median 83.9 tok/s, p95 127.5 tok/s, min 41.1 tok/s).
+- **TTFT is rock-stable at ~224 ms** across all prompt sizes — prefill is well-tuned in this image and the FlashInfer 0.6.9rc1 b12x backend is doing its job on sm_121a.
+- **27B dense is a different perf class than 35B-A3B MoE** — the MoE activates ~3 B params per token and lands at ~84 tok/s median; the dense 27B activates all params per token and lands at ~30 tok/s median. Both are in-class for their architecture on GB10.
+
+#### Quality verification (every output spot-checked)
+
+| Prompt | Result |
+|---|---|
+| `47 × 83` step-by-step | Correct partial-products algorithm, correct answer |
+| Derivative of `x³ − 2x² + 5x − 1` | Identified power rule, correct stepwise solution |
+| Bat-and-ball ($1.10) puzzle | Avoided intuition trap, set up algebraic system |
+| Python Fibonacci memoization | Idiomatic with default-arg memo dict + docstring |
+| Rust `&str` → reversed `String` | Used `unicode_segmentation` crate, grapheme-correct |
+| SQL top-3 customers JOIN | Correct GROUP BY + ORDER BY DESC LIMIT 3 |
+| Transitive syllogism (bloops/razzles/lazzles) | Correct, structured proof |
+| ZKP for basic-crypto audience | Structured multi-paragraph pedagogy |
+| Security research / SQLi PoCs | Complied with research framing, structured 3-class breakdown |
 
 ### Other hardware
 
 - **B100 / B200**: not measured by us; expect substantially higher throughput than DGX Spark due to higher-end FP4 silicon and larger memory bandwidth.
-- **RTX PRO 6000 Blackwell (sm_120)**: not measured on this specific model; reference deployments of similar 27B NVFP4 hybrids land in the 60–90 tok/s single-stream range.
+- **RTX PRO 6000 Blackwell (sm_120)**: not measured on this specific model; reference deployments of similar 27B NVFP4 hybrids land in the 60–90 tok/s single-stream range without DFlash, higher with.
 - **A100 / H100 (BF16)**: BF16 path, no FP4 advantage. Expect 30–50 tok/s single-stream decode at the recommended config.
 
 ---
 
 ## Configuration reference
 
-### NVFP4 on DGX Spark — full flag explanation
+### NVFP4 on DGX Spark — full flag explanation (production v2.1 config)
 
 | Flag | Value | Why |
 |---|---|---|
 | `--quantization compressed-tensors` | required | Tells vLLM the checkpoint uses the `compressed-tensors` format (which carries NVFP4 metadata). |
-| `--max-model-len` | `262144` | Full trained context window. |
-| `--max-num-seqs` | `64` | Conservative for 262K context on 128 GB unified memory. Raise to 128 only for short-context workloads. |
-| `--max-num-batched-tokens` | `16384` | Safe prefill budget. Stock vLLM default of 65536 will OOM under concurrent long-context requests. |
-| `--gpu-memory-utilization` | `0.85` | Leaves 15 % headroom. **Do not exceed 0.88 on DGX Spark** — unified memory thrashes at higher values. |
+| `--kv-cache-dtype auto` | required | BF16 KV cache. TurboQuant K8V4 (3.76× compression) is *unsupported* on hybrid attention + Mamba models — vLLM raises a deliberate guard. The 27B-AEON stack stays on uniform BF16 KV until a layer-skipping option ships. |
+| `--no-async-scheduling` | required | Required for clean DFlash spec-decode acceptance metric capture; async scheduling double-counts spec-decode tokens in v0.20.0. |
+| `--max-model-len` | `200000` | 200K context — leaves headroom under the trained 262K. KV cache holds ~219K slots, so `200000 / 219K = 2.87×` max effective concurrency at full context. Raise to 262144 only with a corresponding cut to `--max-num-seqs`. |
+| `--max-num-seqs` | `16` | 16 concurrent sequences. Lower than you'd expect because the DFlash drafter's own KV state and the spec-decode scheduler bookkeeping eat into the unified-memory budget. **Without DFlash, raise to 32–64.** |
+| `--max-num-batched-tokens` | `32768` | Prefill budget. Higher than the v1.2 default (16384) because v2.1 holds prefill stable to this ceiling on GB10. |
+| `--gpu-memory-utilization` | `0.85` | Leaves 15 % headroom. **Do not exceed 0.88 on DGX Spark** — unified memory thrashes above that. |
 | `--enable-chunked-prefill` | on | Required for long-context workloads to avoid prefill OOM. |
-| `--no-enable-prefix-caching` | off | Disabled by default for this image; the patched paths handle KV cache differently. |
+| `--enable-prefix-caching` | on | Enabled in v2.1 (was off in v1.2). Material throughput win for chat workloads with shared system prompts. |
 | `--load-format safetensors` | required | NVFP4 weights ship as safetensors. |
 | `--trust-remote-code` | required | Qwen 3.6 uses custom modeling code. |
 | `--enable-auto-tool-choice` | on | Enables OpenAI-compatible tool calling. |
 | `--tool-call-parser qwen3_coder` | required for tools | Parses Qwen 3.6's tool-call XML. |
-| `--reasoning-parser qwen3` | required for thinking mode | Parses `<thinking>` blocks. |
+| `--reasoning-parser qwen3` | required for thinking mode | Parses `<think>` blocks. |
 | `--attention-backend flash_attn` | required | Stable on sm_121a. |
-| `--mm-encoder-tp-mode data` | required | Multimodal vision encoder TP strategy. |
-| `--mm-processor-cache-type shm` | recommended | Shared-memory mm processor cache for performance. |
+| `--limit-mm-per-prompt '{"image":4,"video":2}'` | recommended | Hard caps on multimodal inputs per request. |
+| `--mm-encoder-tp-mode data` | required | Vision encoder TP strategy. |
+| `--mm-processor-cache-type shm` | recommended | Shared-memory mm processor cache. |
+| `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'` | recommended | DFlash spec-decode at k=15. Confirmed best k for this dense 27B per AEON-7 production benchmarks 2026-04-24. |
 
-### Required environment variables (DGX Spark NVFP4)
+### Required environment variables (DGX Spark NVFP4 / v2.1 image)
 
 | Variable | Value | Why |
 |---|---|---|
-| `TORCH_CUDA_ARCH_LIST` | `12.0+PTX` | sm_120 baseline + PTX for sm_121a forward-compat. |
+| `VLLM_ALLOW_LONG_MAX_MODEL_LEN` | `1` | Allows `--max-model-len` past the model's hard ceiling assertion. |
+| `TORCH_CUDA_ARCH_LIST` | `12.1a` | sm_121a-specific. |
 | `PYTORCH_CUDA_ALLOC_CONF` | `expandable_segments:True` | Reduces fragmentation under long-context KV churn. |
-| `VLLM_USE_FLASHINFER_MOE_FP4` | `0` | Forces the patched CUTLASS NVFP4 path; FlashInfer's MoE FP4 kernel has known correctness issues on sm_121a as of this image. |
+| `TORCH_MATMUL_PRECISION` | `high` | Standard precision for FP4 matmul paths. |
+| `NVIDIA_FORWARD_COMPAT` | `1` | DGX Spark forward-compat shim. |
+| `NVIDIA_DISABLE_REQUIRE` | `1` | Disables driver version assertion — required because GB10 ships with a driver newer than vLLM's `nvidia-require-cuda` baseline. |
+| `ENABLE_NVFP4_SM100=0` | `0` | Required by PR #40191 for sm_121a-only builds. Without it, `vllm._C_stable_libtorch` fails to import — depends on SM100-only `mxfp4_experts_quant` kernels that don't exist on SM121. |
+| `VLLM_USE_FLASHINFER_MOE_FP4` | `0` | Defensive: this model is dense (no MoE); disabling the FlashInfer FP4 MoE auto-probe avoids SM121 PTX rejection log spam during boot. |
+| `VLLM_TEST_FORCE_FP8_MARLIN` | `0` | Override baked test-image defaults; keep production NVFP4 path selection. |
+| `VLLM_USE_FLASHINFER_SAMPLER` | `1` | FlashInfer CUDA top-k/top-p sampler for normal sampled requests. |
 
 ### BF16 on A100 / H100 — full flag explanation
 
@@ -556,6 +579,6 @@ Apache 2.0, inherited from `Qwen/Qwen3.6-27B`.
 
 **Built over 72 hours · Hundreds of research agents · Lossless · Capability-enhanced**
 
-[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored) &nbsp;·&nbsp; [NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4) &nbsp;·&nbsp; [Container](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash/pkgs/container/vllm-spark-omni-q36)
+[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored) &nbsp;·&nbsp; [NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4) &nbsp;·&nbsp; [Container](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored/pkgs/container/vllm-aeon-ultimate)
 
 </div>

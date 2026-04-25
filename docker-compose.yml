@@ -1,60 +1,145 @@
-# docker-compose.yml — Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4 on DGX Spark
+# docker-compose.yml — Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4 production deployment on DGX Spark
 #
-# Recommended deployment for Blackwell-class hardware (DGX Spark / GB10 / sm_121a,
-# B100/B200, RTX PRO 6000 Blackwell). Uses the production-stable patched vLLM
-# image with sm_121a CUTLASS NVFP4 kernels.
+# This is the FULL production v2 config used to measure the benchmarks reported in README.md.
+# Same image, same flags, same env, same speculative-decoding pipeline.
 #
-# Pull weights first:
+# Image:       ghcr.io/aeon-7/vllm-aeon-ultimate:qwen36-v2.1
+# Built on:    vLLM v0.20.0 (101584af0a, tagged 2026-04-23) + 5 patches:
+#                #40092 SWA backend assert fix
+#                #40454 default-align mamba cache w/ spec-decode
+#                #40191 ENABLE_NVFP4_SM100=0 guard
+#                #40662 unified spec-decode acceptance metrics
+#                #38479 TurboQuant K8V4 backend baked in
+#              FlashInfer 0.6.9rc1 (b12x backend — first SM121 NVFP4 GEMM path)
+#              TurboQuant @ AEON-7/turboquant fix/cuda-graph-safe-qjl-powers
+#              Speculators v0.3 (multi-method registry + DynamicProposer)
+#              All v1.2 patches reapplied
+#
+# Hardware:    DGX Spark (NVIDIA GB10, 128 GB unified memory, sm_121a)
+#
+# Pipeline:    NVFP4 main model + DFlash speculative decoding (k=15) via architecture-
+#              matched drafter. Spec-decode acceptance averages high enough on this
+#              dense 27B that DFlash is the recommended production path.
+#
+# Required downloads (run once):
+#   hf auth login                                           # if not already authenticated
 #   hf download AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4 \
-#     --local-dir /opt/models/aeon-ultimate-nvfp4
+#     --local-dir ./models/aeon-ultimate-nvfp4
+#   hf download z-lab/Qwen3.6-27B-DFlash \
+#     --local-dir ./models/dflash-drafter
+#   # Note: z-lab/Qwen3.6-27B-DFlash is auto-gated. First download will redirect
+#   # you to accept the terms-of-use page (one click, instant approval).
 #
-# Then:
+# Start:
 #   docker compose up -d
-#   docker compose logs -f aeon-ultimate
+#   docker compose logs -f vllm
+#
+# Test:
+#   curl http://localhost:8000/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"aeon-ultimate","messages":[{"role":"user","content":"Hello"}]}'
 
 services:
-  aeon-ultimate:
-    image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2
+  vllm:
+    image: ghcr.io/aeon-7/vllm-aeon-ultimate:qwen36-v2.1
     container_name: aeon-ultimate
     restart: unless-stopped
     network_mode: host
     ipc: host
-    runtime: nvidia
+    ulimits:
+      memlock: -1
+
     environment:
-      # sm_120 baseline + PTX for sm_121a forward-compat
-      TORCH_CUDA_ARCH_LIST: "12.0+PTX"
-      # Reduce fragmentation under long-context KV churn
-      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
-      # Force patched CUTLASS NVFP4 path; FlashInfer's MoE FP4 has known
-      # correctness issues on sm_121a as of this image
-      VLLM_USE_FLASHINFER_MOE_FP4: "0"
-      NVIDIA_VISIBLE_DEVICES: all
+      # ─── Core vLLM ───
+      # Allow long max_model_len without hard ceiling assertion
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+
+      # ─── GB10 / sm_121a runtime ───
+      - TORCH_CUDA_ARCH_LIST=12.1a
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCH_MATMUL_PRECISION=high
+      - NVIDIA_FORWARD_COMPAT=1
+      - NVIDIA_DISABLE_REQUIRE=1
+
+      # Required by PR #40191 for sm_121a-only builds — without this,
+      # vllm._C_stable_libtorch.abi3.so fails to import (depends on SM100-only
+      # mxfp4_experts_quant kernels that don't exist on SM121).
+      - ENABLE_NVFP4_SM100=0
+
+      # ─── FP4 path selection ───
+      # Defensive: disable FlashInfer FP4 MoE auto-probe (this model is DENSE — no MoE)
+      # to avoid SM121 PTX rejection log spam during boot.
+      - VLLM_USE_FLASHINFER_MOE_FP4=0
+      # Override baked test-image defaults; keep production NVFP4 path selection.
+      - VLLM_TEST_FORCE_FP8_MARLIN=0
+      # Use FlashInfer's CUDA top-k/top-p sampler for normal sampled requests.
+      - VLLM_USE_FLASHINFER_SAMPLER=1
+      # NOT setting (intentionally — would force fallback paths):
+      #   VLLM_NVFP4_GEMM_BACKEND=marlin
+      #   VLLM_TEST_FORCE_FP8_MARLIN=1
+
     volumes:
-      - /opt/models/aeon-ultimate-nvfp4:/models/aeon-ultimate:ro
-    command: >
-      vllm serve /models/aeon-ultimate
-      --served-model-name aeon-ultimate
-      --host 0.0.0.0 --port 8000
-      --tensor-parallel-size 1
-      --dtype auto
-      --quantization compressed-tensors
-      --max-model-len 262144
-      --max-num-seqs 64
-      --max-num-batched-tokens 16384
-      --gpu-memory-utilization 0.85
-      --enable-chunked-prefill
-      --no-enable-prefix-caching
-      --load-format safetensors
-      --trust-remote-code
-      --enable-auto-tool-choice
-      --tool-call-parser qwen3_coder
-      --reasoning-parser qwen3
-      --attention-backend flash_attn
-      --mm-encoder-tp-mode data
-      --mm-processor-cache-type shm
+      # Main NVFP4 weights (~26 GB)
+      - ./models/aeon-ultimate-nvfp4:/models/aeon-ultimate
+      # DFlash drafter (~1 GB) for k=15 speculative decoding
+      - ./models/dflash-drafter:/models/dflash-drafter
+
+    command:
+      - bash
+      - -c
+      - |
+        exec vllm serve /models/aeon-ultimate \
+          --served-model-name aeon-ultimate qwen36-ultimate aeon-fast aeon-deep \
+          --host 0.0.0.0 --port 8000 \
+          --tensor-parallel-size 1 \
+          --dtype auto \
+          --quantization compressed-tensors \
+          --kv-cache-dtype auto \
+          --no-async-scheduling \
+          --max-model-len 200000 \
+          --max-num-seqs 16 \
+          --max-num-batched-tokens 32768 \
+          --gpu-memory-utilization 0.85 \
+          --enable-chunked-prefill \
+          --enable-prefix-caching \
+          --load-format safetensors \
+          --trust-remote-code \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --reasoning-parser qwen3 \
+          --attention-backend flash_attn \
+          --limit-mm-per-prompt '{"image": 4, "video": 2}' \
+          --mm-encoder-tp-mode data \
+          --mm-processor-cache-type shm \
+          --speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'
+        # Notes on configuration choices:
+        #   - DFlash k=15 — confirmed best for this dense 27B per AEON-7 production
+        #     benchmarks. Architecture-matched drafter (z-lab/Qwen3.6-27B-DFlash) keeps
+        #     spec-decode acceptance well above the break-even point where the drafter
+        #     itself becomes overhead.
+        #   - DynamicProposer (per-seq dynamic k) was attempted but Speculators v0.3 has
+        #     a pydantic-incompatibility bug at this image's build time. Plain DFlash
+        #     k=15 is the proven path until Speculators ships a fix.
+        #   - TurboQuant K8V4 KV-cache compression (3.76×) was attempted but raises
+        #     "TurboQuant KV cache is not supported for hybrid (attention + Mamba)
+        #     models" — a deliberate guard in the vLLM integration code, not a kernel
+        #     issue. v2.1+ may add --kv-cache-dtype-skip-layers to apply K8V4 to the
+        #     16 full-attention layers only.
+        #   - max-num-seqs is 16 (not 64) because the DFlash drafter's own KV state
+        #     and the spec-decode scheduler's bookkeeping eat into the unified-memory
+        #     budget. If you disable DFlash and run plain decode, raise to 32-64.
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 300s
+      retries: 3
+      start_period: 600s    # First boot loads weights + DFlash drafter + warmup
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
