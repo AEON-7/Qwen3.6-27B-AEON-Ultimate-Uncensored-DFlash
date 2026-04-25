@@ -163,7 +163,7 @@ These all appear in [`docker-compose.yml`](docker-compose.yml). Each line below 
 | `--max-num-batched-tokens` | `32768` | Prefill budget. v2.1 holds prefill stable to this ceiling on GB10. v1.2 was at 16384. | "Stock vLLM uses 65536" — OOMs on GB10 unified memory under concurrent long-context |
 | `--gpu-memory-utilization` | `0.85` | Unified memory cap. See "Don't undo #4". | "0.95 is the recommended default" — for dedicated VRAM only |
 | `--enable-chunked-prefill` | flag | Required for long-context workloads to avoid prefill OOM. | None |
-| `--enable-prefix-caching` | flag | **Enabled in v2.1** (was off in v1.2). Material throughput win for chat workloads with shared system prompts. | "Disable prefix caching for spec-decode" — was a v1.x compat issue, fixed in v2.x patches |
+| `--enable-prefix-caching` | flag | **Enabled in v2.1** (was off in v1.2). Two distinct features: (1) standard attention K/V prefix caching for the 16 full-attention layers, and (2) **`mamba_cache_mode=align`** for the 48 GDN layers — caches hybrid SSM hidden state across requests on Qwen3_5ForConditionalGeneration. Without this, multi-turn agent workloads pay full GDN re-prefill on every turn (75 % of the model). **Disabling prefix caching loses both** — don't do it. | "Disable prefix caching for spec-decode" — was a v1.x compat issue, fixed in v2.x patches |
 | `--load-format safetensors` | required | NVFP4 weights ship as safetensors. | None |
 | `--trust-remote-code` | required | Qwen 3.6 uses custom modeling code. | None |
 | `--enable-auto-tool-choice` | flag | Enables OpenAI-compatible tool calling. | None |
@@ -185,7 +185,7 @@ The image is `vllm-aeon-ultimate-dflash:qwen36-v2.1`. It is built on **vLLM v0.2
 | PR | Title | What it fixes |
 |---|---|---|
 | #40092 | SWA backend assert fix | Sliding-window attention assertion that fired on Qwen3.6's specific layer config |
-| #40454 | Default-align mamba cache w/ spec-decode | Hybrid GDN + DFlash spec-decode cache alignment bug |
+| #40454 | Default-align mamba cache w/ spec-decode | Hybrid GDN + DFlash spec-decode cache alignment bug. **Also enables `mamba_cache_mode=align`** — when `--enable-prefix-caching` is on (it is, in this image), this caches GDN/SSM hidden state across requests for hybrid models that report `supports_mamba_prefix_caching=True` (Qwen3.6-27B does). Multi-turn agent workloads with shared prefix tokens benefit dramatically: turns 2+ skip re-rolling the 48 GDN layers' recurrent state. **Currently flagged "experimental" by vLLM** — a warning prints at boot ("Prefix caching in Mamba cache 'align' mode is currently enabled. Its support for Mamba layers is experimental.") This is expected; the feature is doing real work under the experimental label. |
 | #40191 | `ENABLE_NVFP4_SM100=0` guard | Allows sm_121a-only builds to import without SM100-only `mxfp4_experts_quant` symbols |
 | #40662 | Unified spec-decode acceptance metrics | DFlash + DynamicProposer + EAGLE all report through the same `/metrics` schema |
 | #38479 | TurboQuant K8V4 backend | KV-cache compression backend (currently guarded out for hybrid models — see #39931 for the unblock) |
