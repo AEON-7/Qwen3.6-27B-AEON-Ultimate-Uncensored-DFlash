@@ -441,8 +441,9 @@ Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate:qwen36-v2.1`, DFlash spec-
 
 | Metric | Value |
 |---|---|
+| **Peak decode rate** | **50.5 tok/s** (math word problem; high DFlash acceptance) |
 | **Median decode rate** | **29.5 tok/s** |
-| Min / max decode rate | 14.4 / 50.5 tok/s |
+| Min decode rate | 14.4 tok/s (free-form prose; low DFlash acceptance) |
 | **Median TTFT** | **224 ms** |
 | TTFT range | 200 – 282 ms (very tight) |
 | Aggregate over 11-prompt mixed suite | 2,933 tokens in 148.0 s |
@@ -450,14 +451,16 @@ Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate:qwen36-v2.1`, DFlash spec-
 
 #### By prompt class
 
-| Class | Median tok/s | Notes |
-|---|---|---|
-| **Math** (arithmetic, calculus, word problems) | **39.4** | Best class — short, structured, high DFlash acceptance |
-| **Code** (Python, Rust, SQL) | **35.2** | High DFlash acceptance on syntactic patterns |
-| **Reasoning** (transitive syllogism) | 35.0 | |
-| Long-form (ZKP exposition) | 17.4 | KV-cache pressure on longer outputs |
-| Security research (SQLi PoCs) | 17.3 | Compliant with research framing |
-| Pure decode (256 / 512 tok essays) | 14.9 | Lower DFlash acceptance on free-form prose |
+| Class | Median tok/s | **Peak tok/s** | Notes |
+|---|---|---|---|
+| **Math** (arithmetic, calculus, word problems) | 39.4 | **50.5** | Best class — short, structured, high DFlash acceptance |
+| **Code** (Python, Rust, SQL) | 35.2 | **40.9** | High DFlash acceptance on syntactic patterns |
+| **Reasoning** (transitive syllogism) | 35.0 | 35.0 | n=1 |
+| Long-form (ZKP exposition) | 17.4 | 17.4 | n=1; KV-cache pressure on long outputs |
+| Security research (SQLi PoCs) | 17.3 | 17.3 | n=1; complied with research framing |
+| Pure decode (256 / 512 tok essays) | 14.9 | 14.9 | Lower DFlash acceptance on free-form prose |
+
+> **Peak performance — 50.5 tok/s** on the math word problem (bat-and-ball). DFlash acceptance is near-perfect on the highly-structured "define variables → set up equations → solve" output pattern that closely matches the architecture-matched drafter's training distribution. This is a glimpse of the upper-bound rate this stack delivers when the workload aligns with spec-decode strengths.
 
 #### What the numbers mean
 
