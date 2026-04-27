@@ -220,7 +220,19 @@ services:
 docker compose -f docker-compose.bf16.yml up -d
 ```
 
-For 96 GB cards (RTX PRO 6000 Blackwell on the BF16 path), raise to `--max-num-seqs 32 --max-num-batched-tokens 16384 --max-model-len 262144`.
+For 96 GB cards (RTX PRO 6000 Blackwell on the BF16 path), raise to `--max-num-seqs 32 --max-num-batched-tokens 16384 --max-model-len 262144`. **For native FP4 throughput on RTX PRO 6000, see the dedicated NVFP4 recipe below.**
+
+---
+
+## Other hardware configurations
+
+The DGX Spark and BF16 quickstarts above are the AEON-7 team's measured-and-validated configurations. Recipes for additional hardware live in the [`other-hardware/`](other-hardware/) directory — each in its own subfolder with a tuned `docker-compose.yml` and a per-hardware README explaining what differs from the DGX Spark recipe and why.
+
+| Hardware | Recipe | Status | Recommended for |
+|---|---|---|---|
+| **NVIDIA RTX PRO 6000 Blackwell** (sm_120, 96 GB GDDR7) | [`other-hardware/rtx6000pro/`](other-hardware/rtx6000pro/) | Validated 2026-04-27 (community) | Single-GPU NVFP4 deployment with native sm_120 FP4 tensor-core throughput. Measured: **120 tok/s** math/code, **98 tok/s** long-form, **58–94 tok/s** multi-turn (5K shared context). Roughly 2-4× DGX Spark. |
+
+If you have hardware not covered here and want to contribute a recipe, follow the pattern in `other-hardware/rtx6000pro/` — a folder, a tuned `docker-compose.yml`, and a README explaining the differences from the DGX Spark baseline.
 
 ---
 

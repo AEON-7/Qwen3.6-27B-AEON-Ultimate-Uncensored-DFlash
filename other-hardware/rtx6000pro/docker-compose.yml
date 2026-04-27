@@ -1,0 +1,196 @@
+# docker-compose.yml — Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4 on RTX PRO 6000 Blackwell
+#
+# Hardware:    NVIDIA RTX PRO 6000 Blackwell (sm_120, 96 GB GDDR7 dedicated VRAM)
+# Image:       vllm/vllm-openai:v0.20.1 (stock upstream — see README.md in this folder for why)
+#
+# ⚠️  STATUS: EXPERIMENTAL — pending community validation.
+# The AEON-7 team does not currently have RTX PRO 6000 hardware to validate
+# this recipe. If you run this stack, please open an issue at
+# https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DFlash with
+# your tok/s numbers, boot-log warnings, and any failure modes — we'll flip
+# the EXPERIMENTAL tag once we have a confirmed working report.
+#
+# This recipe is tuned for MAXIMUM throughput on RTX PRO 6000 Blackwell.
+# It is intentionally different from the DGX Spark recipe at the repo root —
+# see ../../AGENTS.md for the full rationale on why settings differ between
+# DGX Spark (sm_121a, unified memory) and RTX PRO 6000 (sm_120, dedicated VRAM).
+#
+# Required downloads (run once from this directory):
+#   hf auth login
+#   hf download AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4 \
+#     --local-dir ./models/aeon-ultimate-nvfp4
+#   hf download z-lab/Qwen3.6-27B-DFlash \
+#     --local-dir ./models/dflash-drafter
+#   # Note: z-lab/Qwen3.6-27B-DFlash is auto-gated. First download will redirect
+#   # you to accept the terms-of-use page (one click, instant approval).
+#
+# Start:
+#   docker compose up -d
+#   docker compose logs -f vllm
+#
+# Test:
+#   curl http://localhost:8000/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"aeon-ultimate","messages":[{"role":"user","content":"Hello"}]}'
+
+services:
+  vllm:
+    image: vllm/vllm-openai:v0.20.1
+    container_name: aeon-ultimate-rtx6000pro
+    restart: unless-stopped
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    ulimits:
+      memlock: -1
+
+    environment:
+      # ─── Compile target: sm_120 (RTX PRO 6000 Blackwell) ───
+      # NOT 12.1a — that's DGX Spark only. sm_120 is the canonical Blackwell
+      # NVFP4 target and is fully supported by stock upstream vLLM kernels.
+      - TORCH_CUDA_ARCH_LIST=12.0
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCH_MATMUL_PRECISION=high
+
+      # ─── NVFP4 GEMM backend selection ───
+      # Explicitly select FlashInfer's CUTLASS NVFP4 path — the optimal kernel
+      # on Blackwell sm_120. vLLM's heuristic should pick this anyway, but the
+      # explicit setting removes ambiguity if the heuristic ever changes.
+      - VLLM_NVFP4_GEMM_BACKEND=flashinfer-cutlass
+
+      # ─── FP4 path defensive flags ───
+      # This model is DENSE — disable the FlashInfer FP4 MoE auto-probe to
+      # avoid noisy log warnings during boot.
+      - VLLM_USE_FLASHINFER_MOE_FP4=0
+      # Use FlashInfer's CUDA top-k/top-p sampler. Materially faster than the
+      # PyTorch fallback for sampled requests.
+      - VLLM_USE_FLASHINFER_SAMPLER=1
+
+      # ─── NOT setting (intentionally — these are DGX Spark / sm_121a-only) ───
+      #   ENABLE_NVFP4_SM100=0          # SM121-only build guard, irrelevant here
+      #   NVIDIA_FORWARD_COMPAT=1       # GB10-specific driver workaround
+      #   NVIDIA_DISABLE_REQUIRE=1      # paired with above
+      #   VLLM_TEST_FORCE_FP8_MARLIN=0  # baked into our patched image only
+      #   VLLM_ALLOW_LONG_MAX_MODEL_LEN=1   # not needed; full 262K fits standard cap
+
+      - NVIDIA_VISIBLE_DEVICES=all
+
+    volumes:
+      # Main NVFP4 weights (~26 GB). Adjust paths if you store models elsewhere.
+      - ./models/aeon-ultimate-nvfp4:/models/aeon-ultimate
+      # DFlash drafter (~1 GB) — REQUIRED for the perf numbers in this recipe.
+      # Without it, decode rate drops 40-50% (you'd be on plain base inference).
+      - ./models/dflash-drafter:/models/dflash-drafter
+
+    command:
+      - --model
+      - /models/aeon-ultimate
+      - --served-model-name
+      - aeon-ultimate
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+      - --tensor-parallel-size
+      - "1"
+      - --dtype
+      - auto
+      - --quantization
+      - compressed-tensors
+      - --kv-cache-dtype
+      - auto
+
+      # Context window: full trained 262K. Fits comfortably with 96 GB dedicated
+      # VRAM at our --max-num-seqs setting. (DGX Spark caps at 200K because
+      # unified memory is tighter; doesn't apply here.)
+      - --max-model-len
+      - "262144"
+
+      # Concurrency: 32 sequences. Higher than DGX Spark's 16 because RTX PRO
+      # 6000 has more memory bandwidth + dedicated VRAM (no unified-memory
+      # thrashing risk above 0.88). Could potentially go higher (48-64) under
+      # short-context workloads — measure before bumping.
+      - --max-num-seqs
+      - "32"
+
+      # Prefill budget: 32K. This is vLLM's inductor compile-range ceiling
+      # (compile_ranges_endpoints=[32768]); above this, prefill falls back to
+      # eager mode and slows down. Same ceiling as DGX Spark — arch-independent.
+      - --max-num-batched-tokens
+      - "32768"
+
+      # GPU memory utilization: 0.94. Validated on RTX PRO 6000 by community
+      # tester aptx5497 (HF discussion 2026-04-27).
+      #
+      # IMPORTANT: 0.95 is NOT safe on this image when FlashInfer NVFP4 GEMM
+      # autotune is enabled. The autotuner needs ~2.12 GiB workspace and OOMs
+      # at 0.95 (only ~1.32 GiB free after weights + KV reservation), failing
+      # boot with: "torch.OutOfMemoryError: CUDA out of memory" inside
+      # vllm.utils.flashinfer.flashinfer_mm_fp4 -> flashinfer.gemm.mm_fp4.
+      # Workarounds, in preference order:
+      #   1. --gpu-memory-utilization 0.94 (this default)  — autotune enabled,
+      #      some "OOM detected, falling back to default tactic" warnings, but
+      #      server starts and KV capacity ~98% of 0.95
+      #   2. --gpu-memory-utilization 0.92                 — fully clean, no
+      #      autotune fallbacks, slightly less KV
+      #   3. --gpu-memory-utilization 0.95 + --no-enable-flashinfer-autotune —
+      #      maximum KV but loses autotuned kernel selection
+      # Do NOT apply DGX Spark's 0.85 cap — that's specific to unified memory.
+      - --gpu-memory-utilization
+      - "0.94"
+
+      - --enable-chunked-prefill
+
+      # Prefix caching: enables both standard attention K/V caching AND
+      # mamba_cache_mode=align (auto-on for Qwen3_5ForConditionalGeneration).
+      # The mamba half is what makes multi-turn agent workloads fast — turns
+      # 2+ skip re-prefilling the 48 GDN layers when the prefix is shared.
+      # vLLM will print a warning calling this "experimental"; it's working
+      # correctly, that's just upstream tagging.
+      - --enable-prefix-caching
+
+      - --load-format
+      - safetensors
+      - --trust-remote-code
+
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --reasoning-parser
+      - qwen3
+
+      - --attention-backend
+      - flash_attn
+
+      - --limit-mm-per-prompt
+      - '{"image": 4, "video": 2}'
+      - --mm-encoder-tp-mode
+      - data
+      - --mm-processor-cache-type
+      - shm
+
+      # DFlash speculative decoding at k=15. Block size of the published
+      # z-lab/Qwen3.6-27B-DFlash drafter is 16, so k=15 is the architectural
+      # max. Going higher produces wasted compute (the drafter can't predict
+      # past block_size-1 positions).
+      - --speculative-config
+      - '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # First boot loads the 26 GB NVFP4 weights + DFlash drafter, runs
+      # FlashInfer NVFP4 GEMM autotune, captures CUDA graphs. ~10 minutes
+      # on cold start; subsequent restarts (with caches warm) ~3-4 minutes.
+      start_period: 600s
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -8,6 +8,22 @@ This file is the authoritative source. If a piece of public documentation contra
 
 ---
 
+## ⚠️ Hardware scope: this file is for DGX Spark / GB10 / sm_121a
+
+**Every flag, env var, container reference, and "DO NOT UNDO" rule in this file targets the DGX Spark (NVIDIA GB10, sm_121a, 128 GB unified memory) deployment.** That is the AEON-7 team's primary, measured-and-validated hardware platform. The container image, the patch series in v2.1, the env var set, the `--gpu-memory-utilization 0.85` cap, the `--max-num-seqs 16` ceiling, the `ENABLE_NVFP4_SM100=0` build guard — all of it is GB10-specific.
+
+**If you are operating on different hardware, the rules in this file do NOT directly apply.** Specifically:
+
+| You're on | Recipe location | Why DGX Spark rules don't apply |
+|---|---|---|
+| **NVIDIA RTX PRO 6000 Blackwell** (sm_120) | [`other-hardware/rtx6000pro/`](other-hardware/rtx6000pro/) | Different SM (sm_120 vs sm_121a) → different kernels. Dedicated VRAM (not unified) → no 0.88 ceiling. Higher memory bandwidth → more concurrency budget. Uses **stock `vllm/vllm-openai:v0.20.1`**, not the AEON-7 patched container. |
+| **A100 / H100** (BF16 path) | [`docker-compose.bf16.yml`](docker-compose.bf16.yml) at repo root | No NVFP4 hardware support — runs the BF16 release. Vanilla `vllm/vllm-openai`, no DFlash drafter, different memory budget. |
+| **B100 / B200** (sm_100) | Not in this repo yet | sm_100 native NVFP4 via `tcgen05`/UTCQMMA — different code path than sm_121a. Stock vLLM should work; recipe contributions welcome. |
+
+If your task is on RTX PRO 6000, **do not apply this file's flags wholesale** — read `other-hardware/rtx6000pro/README.md` first; many of this file's rules invert (e.g., "don't push gpu-memory-utilization above 0.88" is a unified-memory rule that does NOT apply on dedicated VRAM). The per-hardware folder explains every difference.
+
+---
+
 ## TL;DR for agents (60 seconds)
 
 | Thing | Value | Don't second-guess |
@@ -333,6 +349,54 @@ Production config, single-stream, greedy decoding, `enable_thinking=false`:
 | Cold-start to first token | ~90-180 s (model load + DFlash drafter load + CUTLASS autotuning) |
 
 If your measured numbers are materially below these (e.g., median < 15 tok/s), something's wrong with the config — don't accept the regression as "expected." Run the diagnostics above.
+
+---
+
+## Client integration notes (read this before debugging "the model returned empty content")
+
+These are not bugs — they're contracts agents and client developers commonly misread.
+
+### Reasoning parser splits output across two fields
+
+With `--reasoning-parser qwen3` (this image's default), the model's chain-of-thought and final answer arrive in different response fields:
+
+| Mode | Reasoning section lives in | Final answer lives in |
+|---|---|---|
+| Streaming (`stream: true`) | `delta.reasoning` (multiple chunks) | `delta.content` (only after reasoning ends) |
+| Non-streaming | `message.reasoning` (set while still reasoning) | `message.content` (populated only when final answer block begins; **`null` until then**) |
+
+**Failure mode for clients that read only `content`**: they will see empty output for the entire reasoning phase. If your client appears to "hang silently" or returns an empty `choices[0].message.content`, this is almost certainly the cause — not a model failure.
+
+**To capture the full output**: read both fields. Concatenate `delta.reasoning + delta.content` (or `message.reasoning + message.content`) for the complete model output. Or render them separately if you want to display the chain-of-thought to users distinctly.
+
+**To opt out of reasoning per-request**: pass `chat_template_kwargs: {enable_thinking: false}` in the request body. The model will skip the reasoning section entirely and stream content directly.
+
+```python
+# Correct: reads both fields
+import requests
+response = requests.post("http://localhost:8000/v1/chat/completions", json={
+    "model": "aeon-ultimate",
+    "messages": [{"role": "user", "content": "..."}],
+    # Add this to skip reasoning:
+    # "chat_template_kwargs": {"enable_thinking": False},
+}).json()
+msg = response["choices"][0]["message"]
+full_output = (msg.get("reasoning") or "") + (msg.get("content") or "")
+```
+
+### `mamba_cache_mode=align` is auto-coupled to `--enable-prefix-caching`
+
+vLLM auto-promotes `mamba_cache_mode` to `align` for `Qwen3_5ForConditionalGeneration` whenever `--enable-prefix-caching` is on (which is our default). **Setting `--mamba-cache-mode none` does NOT disable this** — it's overridden silently. The boot log line `Mamba cache mode is set to 'align' for Qwen3_5ForConditionalGeneration by default when prefix caching is enabled` is informational, not a warning.
+
+The only way to actually run without align is to drop `--enable-prefix-caching` entirely, which loses prefix caching too. In practice, leave it on — the multi-turn benefit is large.
+
+### Prefix cache hit rate is empirically inconsistent on early turns
+
+Validation on RTX PRO 6000 (community report) observed 0 % cache hit on turns 1 and 2 of a multi-turn agent workload, then 61.9 % hit on turn 3 — even with identical system prompts and accumulating shared context. An identical-prompt smoke test (two repeats of a 10K-token prompt) also reported 0 hits on the second request.
+
+This appears to be a real interaction between block-boundary alignment and how `mamba_cache_mode=align` lazily snapshots GDN state. **It's not a config bug.** Once cache hits land (typically turn 3+), the TTFT win is substantial and the feature pays off.
+
+If you're running a benchmark that expects cache hits on turn 2, you may need to extend it to 3+ turns to see the expected behavior.
 
 ---
 
