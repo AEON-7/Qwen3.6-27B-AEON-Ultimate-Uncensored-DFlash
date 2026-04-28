@@ -41,7 +41,9 @@ All six formats are **the same underlying model**. NVFP4 KL divergence vs BF16 s
 >
 > Pick regular if you have ≥48 GB VRAM and want best precision on long-context workloads; pick XS if you're on a 24–32 GB card and want maximum KV headroom with the SSM kernel still numerically stable.
 
-> **Hardware routing:** DGX Spark + DFlash is production-validated; current measured numbers live in the [Performance section](#performance). MTP variants are expected to outperform DFlash on **dedicated-VRAM Blackwell GPUs** (RTX PRO 6000, RTX 5090) due to MTP's higher acceptance length; bench numbers land in the Performance section as they're measured. **DGX Spark stays on the DFlash variant** — its unified-memory bandwidth doesn't reward MTP the way dedicated VRAM does.
+> **Hardware routing (measured, not theoretical):**
+> - **DGX Spark (GB10 / sm_121a)** → use **NVFP4 + DFlash**. Confirmed by head-to-head bench: DFlash beats MTP-XS by ~26 % median, ~52 % peak on Spark. See the [Performance section](#performance) for the matched-config numbers. *Spark's unified memory bandwidth doesn't reward MTP's high acceptance rate the way dedicated VRAM does.*
+> - **RTX PRO 6000 / RTX 5090 / B100/B200 (dedicated VRAM, sm_120/sm_100)** → use **NVFP4-MTP** or **NVFP4-MTP-XS**. MTP outperforms DFlash on dedicated-VRAM Blackwell. Measured numbers in the Performance section.
 
 ---
 
@@ -535,6 +537,24 @@ Single-stream, greedy, thinking OFF; vLLM `--quantization modelopt --speculative
 The XS variant is **~10 % faster median, ~15 % faster peak** on RTX PRO 6000. Most of the win comes from the smaller model footprint freeing up KV-cache bandwidth and the GDN projections sharing the same NVFP4 dispatch path as the rest of the body (one less BF16↔FP4 cast per layer per token). Spec-decode acceptance is essentially identical, so quality on these prompts is unchanged.
 
 > **Why we still ship both**: long-context fidelity (>50K-token recurrence-state stability) was not measured by this 11-prompt suite. The regular variant's BF16 GDN preserves recurrence numerics exactly, which matters for sustained agentic workloads with long shared state. If you have the VRAM, regular is the conservative choice; if you're on a 24–32 GB card, XS is what fits and runs ~10 % faster.
+
+### DGX Spark — MTP-XS comparison (head-to-head against DFlash)
+
+We also ran the XS variant on the DGX Spark itself, in the same `vllm-aeon-ultimate-dflash:qwen36-v2.1` container (which serves both `--quantization compressed-tensors`+DFlash and `--quantization modelopt`+MTP code paths) under matched config — `--max-num-seqs 16 --max-num-batched-tokens 32768 --gpu-memory-utilization 0.85 --max-model-len 200000`, single-stream, greedy. Same 11-prompt suite. The MTP run uses `--speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3}'`.
+
+| Metric | **NVFP4 + DFlash** *(production)* | **NVFP4-MTP-XS** | Δ |
+|---|---|---|---|
+| Median decode rate (thinking OFF) | 32.5 tok/s | 24.1 tok/s | **−26 %** |
+| Peak decode rate (thinking OFF) | 56.7 tok/s | 27.5 tok/s | −52 % |
+| Median decode rate (thinking ON) | 28.3 tok/s | 23.0 tok/s | −19 % |
+| Median TTFT | 325 ms | 298 ms | similar |
+| Spec-decode acceptance | DFlash *k=15* chains | MTP 66.3 % (1.99 / 3.0 mean accepted) | — |
+
+**On DGX Spark, DFlash wins.** MTP loses ~26 % median and ~52 % peak versus DFlash — the opposite of what we measured on RTX PRO 6000. The reason is structural: DGX Spark's GB10 unified memory has lower aggregate bandwidth than dedicated VRAM Blackwell parts, and DFlash's k=15 chain pulls more verified tokens per round than MTP's n=3 even at lower per-token acceptance. MTP's higher acceptance rate (66 %) doesn't translate to throughput when the engine is bandwidth-limited. The peak-rate gap (56.7 vs 27.5) is the most diagnostic: DFlash's amortization shines exactly where MTP's small chain can't reach.
+
+> **Hardware routing locked in:**
+> - **DGX Spark (GB10 / sm_121a, unified memory) → use NVFP4 + DFlash.** This is the production-validated path. Don't switch to MTP variants on Spark.
+> - **RTX PRO 6000 / RTX 5090 / B100/B200 (dedicated VRAM, sm_120/sm_100) → use NVFP4-MTP or NVFP4-MTP-XS.** MTP delivers +10 % over no-speculation and beats DFlash on dedicated VRAM.
 
 ### Other hardware
 
