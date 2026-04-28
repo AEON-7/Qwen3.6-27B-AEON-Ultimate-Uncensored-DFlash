@@ -19,18 +19,22 @@
 
 A **fully uncensored, capability-enhanced** abliteration of [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B), produced over **72 hours of continuous research** drawing on hundreds of parallel AI research agents, the industry's best published methodologies, custom in-house techniques, and yet-unreleased pre-public branches of next-generation abliteration software.
 
-Two release formats:
+Six release formats covering DGX Spark, RTX PRO 6000, RTX 5090, and pre-Blackwell hardware:
 
 | Release | Size | Target hardware | Use when |
 |---|---|---|---|
-| **[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16)** | 51 GB | A100 / H100 80 GB · RTX PRO 6000 Blackwell 96 GB | You have an Ampere/Hopper card or want full-precision reference weights |
+| **[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16)** | 51 GB | A100 / H100 80 GB · RTX PRO 6000 Blackwell 96 GB | You have Ampere/Hopper or want full-precision reference weights |
 | **[NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4)** *(DFlash spec decode)* | 26 GB | DGX Spark (GB10 / sm_121a) | **Production-validated for DGX Spark.** llm-compressor format, `--quantization compressed-tensors`, DFlash drafter k=15 |
-| **[Multimodal-NVFP4-MTP](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP)** *(experimental)* | 27 GB | RTX PRO 6000 Blackwell · B100/B200 | modelopt format, `--quantization modelopt`, MTP spec decode via grafted `mtp.*` head. Vision tower preserved. **In validation.** |
-| **[Text-NVFP4-MTP](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Text-NVFP4-MTP)** *(experimental)* | 26 GB | RTX 5090 (32 GB) · RTX PRO 6000 text-only | Same recipe as Multimodal-NVFP4-MTP, vision tower stripped. **In validation.** |
+| **[Multimodal-NVFP4-MTP](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP)** | 27 GB | RTX PRO 6000 Blackwell · B100/B200 | modelopt format, `--quantization modelopt`, MTP spec decode via grafted `mtp.*` head. Vision tower preserved. **GDN linear-attention preserved BF16** for best long-context fidelity. |
+| **[Text-NVFP4-MTP](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Text-NVFP4-MTP)** | 26 GB | RTX PRO 6000 · text-only deployments | Same recipe as Multimodal-NVFP4-MTP, vision tower stripped. **GDN preserved BF16.** |
+| **[Multimodal-NVFP4-MTP-XS](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS)** | 21 GB | RTX 5090 (32 GB) · tighter dedicated VRAM | Same MTP recipe with **GDN linear-attention projections fully NVFP4-quantized** (saves ~6 GB). Vision tower preserved. |
+| **[Text-NVFP4-MTP-XS](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Text-NVFP4-MTP-XS)** | 20 GB | RTX 5090 text-only · 24 GB cards | Same as Multimodal-XS without vision tower. The smallest variant. |
 
-All four formats are **the same underlying model**. NVFP4 KL divergence vs BF16 source is below the noise floor of stochastic sampling — you cannot tell them apart at the output level. The two MTP variants share the same NVFP4 quantization quality plus the original `Qwen/Qwen3.6-27B` MTP head grafted back in BF16 (bit-exact, verified) for spec-decode drafting.
+All six formats are **the same underlying model**. NVFP4 KL divergence vs BF16 source is below the noise floor of stochastic sampling — you cannot tell them apart at the output level. The four MTP variants share the same NVFP4 quantization quality plus the original `Qwen/Qwen3.6-27B` MTP head grafted back in BF16 (bit-exact, verified) for spec-decode drafting.
 
-> **MTP variants are in testing / validation stage** as of release. vLLM serve under `--quantization modelopt` is confirmed working and MTP spec-decode fires correctly. End-to-end performance benchmarks on RTX 5090, RTX PRO 6000, and DGX Spark are in progress — they're expected to outperform the DFlash variant on **dedicated-VRAM Blackwell GPUs** (RTX 5090, RTX PRO 6000) due to MTP's higher acceptance length, while DFlash is expected to remain the better fit for DGX Spark's unified memory. Current measured numbers (DGX Spark + DFlash) live in the [Performance section](#performance) below; the MTP numbers will land there once measured.
+> **Regular MTP vs XS — what's the difference?** The two regular MTP variants keep the GDN (Mamba-style) `linear_attn.*` projections at BF16 (~11 GB) for better recurrence-state stability and long-context fidelity. The XS variants additionally NVFP4-quantize those projections (saving ~6 GB), matching the footprint of community reference recipes (sakamakismile et al.). **Pick regular if you have ≥48 GB VRAM and want best precision on long-context workloads; pick XS if you're on a 24–32 GB card and want maximum KV headroom.** Only `linear_attn.conv1d` is preserved at BF16 in the XS variants — that's modelopt's default to keep the SSM convolution stable.
+
+> **Hardware routing:** DGX Spark + DFlash is production-validated; current measured numbers live in the [Performance section](#performance). MTP variants are expected to outperform DFlash on **dedicated-VRAM Blackwell GPUs** (RTX PRO 6000, RTX 5090) due to MTP's higher acceptance length; bench numbers land in the Performance section as they're measured. **GDX Spark stays on the DFlash variant** — its unified-memory bandwidth doesn't reward MTP the way dedicated VRAM does.
 
 ---
 
@@ -509,10 +513,26 @@ If you measure 10-15 tok/s per stream while running 2-4 concurrent requests on a
 | ZKP for basic-crypto audience | Structured multi-paragraph pedagogy |
 | Security research / SQLi PoCs | Complied with research framing, structured 3-class breakdown |
 
+### RTX PRO 6000 Blackwell (sm_120, 96 GB) — measured
+
+Single-stream, greedy, thinking OFF; vLLM `--quantization modelopt --speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3}'`, `--max-model-len 200000 --max-num-seqs 32 --max-num-batched-tokens 32768 --gpu-memory-utilization 0.94`. Same 11-prompt suite as the DGX Spark numbers above ([`bench/bench_aeon.py`](bench/bench_aeon.py)).
+
+| Metric | **Multimodal-NVFP4-MTP** *(GDN BF16, 27 GB)* | **Multimodal-NVFP4-MTP-XS** *(GDN NVFP4, 21 GB)* |
+|---|---|---|
+| Median decode rate | 101.5 tok/s | **111.4 tok/s** |
+| Peak decode rate | 108.4 tok/s (Code Python) | **124.7 tok/s** (Code SQL) |
+| Median TTFT | 74 ms | 64 ms |
+| Aggregate over 11-prompt suite | ~92 tok/s | 94.5 tok/s |
+| MTP acceptance rate | 67.7 % | 69.2 % |
+
+The XS variant is **~10 % faster median, ~15 % faster peak** on RTX PRO 6000. Most of the win comes from the smaller model footprint freeing up KV-cache bandwidth and the GDN projections sharing the same NVFP4 dispatch path as the rest of the body (one less BF16↔FP4 cast per layer per token). Spec-decode acceptance is essentially identical, so quality on these prompts is unchanged.
+
+> **Why we still ship both**: long-context fidelity (>50K-token recurrence-state stability) was not measured by this 11-prompt suite. The regular variant's BF16 GDN preserves recurrence numerics exactly, which matters for sustained agentic workloads with long shared state. If you have the VRAM, regular is the conservative choice; if you're on a 24–32 GB card, XS is what fits and runs ~10 % faster.
+
 ### Other hardware
 
 - **B100 / B200**: not measured by us; expect substantially higher throughput than DGX Spark due to higher-end FP4 silicon and larger memory bandwidth.
-- **RTX PRO 6000 Blackwell (sm_120)**: not measured on this specific model; reference deployments of similar 27B NVFP4 hybrids land in the 60–90 tok/s single-stream range without DFlash, higher with.
+- **RTX 5090 (sm_120, 32 GB)**: not measured by us yet; the Text-XS variant is the right fit (~20 GB on disk → ~21 GB at runtime, leaves ~10 GB for KV at `--max-model-len 65536`).
 - **A100 / H100 (BF16)**: BF16 path, no FP4 advantage. Expect 30–50 tok/s single-stream decode at the recommended config.
 
 ---
