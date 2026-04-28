@@ -4,7 +4,7 @@
 
 ### Lossless abliteration · Capability-enhanced · NVFP4 hardware-quantized for Blackwell
 
-[![BF16](https://img.shields.io/badge/HuggingFace-BF16_(51_GB)-yellow?logo=huggingface)](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored)
+[![BF16](https://img.shields.io/badge/HuggingFace-BF16_(51_GB)-yellow?logo=huggingface)](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16)
 [![NVFP4](https://img.shields.io/badge/HuggingFace-NVFP4_(26_GB)-yellow?logo=huggingface)](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4)
 [![Container](https://img.shields.io/badge/ghcr.io-vllm--aeon--ultimate--dflash-blue?logo=docker)](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DFlash/pkgs/container/vllm-aeon-ultimate-dflash)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green)](LICENSE)
@@ -23,7 +23,7 @@ Two release formats:
 
 | Release | Size | Target hardware | Use when |
 |---|---|---|---|
-| **[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored)** | 51 GB | A100 / H100 80 GB · RTX PRO 6000 Blackwell 96 GB | You have an Ampere/Hopper card or want full-precision reference weights |
+| **[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16)** | 51 GB | A100 / H100 80 GB · RTX PRO 6000 Blackwell 96 GB | You have an Ampere/Hopper card or want full-precision reference weights |
 | **[NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4)** | 26 GB | DGX Spark (GB10) · B100/B200 · RTX PRO 6000 Blackwell | You have Blackwell-or-later silicon — **recommended for any new deployment** |
 
 Both formats are **the same model**. NVFP4 KL divergence vs BF16 source is below the noise floor of stochastic sampling — you cannot tell them apart at the output level.
@@ -595,6 +595,6 @@ Apache 2.0, inherited from `Qwen/Qwen3.6-27B`.
 
 **Built over 72 hours · Hundreds of research agents · Lossless · Capability-enhanced**
 
-[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored) &nbsp;·&nbsp; [NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4) &nbsp;·&nbsp; [Container](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DFlash/pkgs/container/vllm-aeon-ultimate-dflash)
+[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16) &nbsp;·&nbsp; [NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4) &nbsp;·&nbsp; [Container](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DFlash/pkgs/container/vllm-aeon-ultimate-dflash)
 
 </div>
