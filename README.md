@@ -447,38 +447,48 @@ Wielding an uncensored model is genuinely different from wielding an aligned one
 
 ### DGX Spark (GB10 / sm_121a) — measured
 
-Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1`, DFlash spec-decode k=15 via `z-lab/Qwen3.6-27B-DFlash` (drafter pulled 2026-04-25), async scheduling enabled, `--max-model-len 200000`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.85`. Single-stream, greedy (`temperature=0`), reasoning mode disabled for clean decode-rate measurement.
+Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1`, DFlash spec-decode k=15 via `z-lab/Qwen3.6-27B-DFlash`, async scheduling enabled, `--max-model-len 200000`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.85`. **Single-stream, greedy** (`temperature=0`), no concurrent serving load. Both bench scripts ([`bench/bench_aeon.py`](bench/bench_aeon.py), [`bench/bench_aeon_thinking.py`](bench/bench_aeon_thinking.py)) ship in this repo so you can run them yourself to verify on your hardware.
 
 #### Headline single-stream numbers
 
-| Metric | Value |
-|---|---|
-| **Peak decode rate** | **56.2 tok/s** (Code Python; high DFlash acceptance) |
-| **Median decode rate** | **32.1 tok/s** |
-| Min decode rate | 14.4 tok/s (free-form prose; low DFlash acceptance) |
-| **Median TTFT** | **350 ms** |
-| TTFT range | 338 – 427 ms |
-| Aggregate over 11-prompt mixed suite | 2,869 tokens in 134.8 s |
-| Success rate | 11 / 11 |
+Two configurations, both useful:
 
-#### By prompt class
+| Metric | **Thinking OFF** *(headline; clean decode-rate measurement)* | **Thinking ON** *(default user-facing path)* |
+|---|---|---|
+| Peak decode rate | **56.7 tok/s** (Code Python) | **46.1 tok/s** (Reasoning) |
+| Median decode rate | **32.5 tok/s** | **28.3 tok/s** |
+| Min decode rate | 14.7 tok/s (Decode 256) | 19.1 tok/s (Long-form) |
+| Median TTFT | 325 ms | 329 ms (effectively the same) |
+| Aggregate over 11-prompt suite | 2,869 tok / 136.6 s = 21.0 tok/s | 3,768 tok / 155.1 s = 24.3 tok/s |
 
-| Class | Median tok/s | **Peak tok/s** | Notes |
+Thinking-on lifts aggregate throughput (more tokens generated in similar wall-clock) because the model spends compute on reasoning tokens at roughly the same decode rate as content tokens. Thinking-on lowers per-prompt decode rate by ~13 % median because reasoning content has lower DFlash acceptance than the structured final-answer formats.
+
+#### By prompt class (thinking OFF — headline)
+
+| Class | Median tok/s | Peak tok/s | Notes |
 |---|---|---|---|
-| **Math** (arithmetic, calculus, word problems) | 41.5 | **51.4** | Best median; short, structured, high DFlash acceptance |
-| **Reasoning** (transitive syllogism) | 40.0 | 40.0 | n=1 |
-| **Code** (Python, Rust, SQL) | 35.7 | **56.2** | New peak — Code Python at 56.2 tok/s |
-| Long-form (ZKP exposition) | 20.8 | 20.8 | n=1; benefits from async iteration overlap |
-| Security research (SQLi PoCs) | 18.6 | 18.6 | n=1; complied with research framing |
-| Pure decode (256 / 512 tok essays) | 15.8 | 15.8 | Lower DFlash acceptance on free-form prose |
+| **Math** (arithmetic, calculus, word problems) | 41.9 | **51.7** | Best median; short, structured, high DFlash acceptance |
+| **Reasoning** (transitive syllogism) | 39.2 | 39.2 | n=1 |
+| **Code** (Python, Rust, SQL) | 36.0 | **56.7** | Peak — Code Python with architecture-matched DFlash drafter |
+| Long-form (ZKP exposition) | 20.6 | 20.6 | n=1 |
+| Security research (SQLi PoCs) | 18.7 | 18.7 | n=1; complied with research framing |
+| Pure decode (256 / 512 tok essays) | 14.7 | 14.7 | Lower DFlash acceptance on free-form prose |
 
-> **Peak performance — 56.2 tok/s** on Code Python with the architecture-matched DFlash drafter. DFlash acceptance is near-perfect on highly-structured outputs (math problems following "define vars → setup → solve", code following idiomatic syntax patterns) that match the drafter's training distribution. This is a glimpse of the upper-bound rate this stack delivers when the workload aligns with spec-decode strengths.
+> **Peak — 56.7 tok/s** on Code Python with thinking OFF. DFlash acceptance is near-perfect on highly-structured outputs (math problems following "define vars → setup → solve", code following idiomatic syntax patterns) that match the drafter's training distribution. This is the upper-bound rate this stack delivers when the workload aligns with spec-decode strengths.
+
+#### Benchmark methodology
+
+The headline numbers are **single-stream, sequential, greedy decoding** with no concurrent traffic on the engine. This is by design — single-stream is the cleanest signal for the model's decode rate and lets us compare like-for-like against published numbers from other speculative-decoding setups.
+
+**Under concurrent serving, expect per-stream throughput to scale roughly inversely with concurrency.** Two concurrent streams ≈ half per-stream tok/s; eight concurrent streams ≈ one-eighth. The model is doing the same total work; you're dividing it across N streams. If your production workload is multi-user, the relevant metric is **aggregate** throughput (load-tested with a tool like `locust` or `wrk`), not per-stream rate.
+
+If you measure 10-15 tok/s per stream while running 2-4 concurrent requests on a real chat workload, that's roughly consistent with our 32 single-stream median divided by concurrency — not a regression.
 
 #### What the numbers mean
 
-- **Async scheduling and the fresh DFlash drafter combined** lifted median throughput +8.8 % and peak throughput +11.3 % vs the v2.1 launch baseline (29.5 / 50.5 → 32.1 / 56.2). The biggest gainers were the longest outputs — long-form +19.5 %, reasoning +14.3 % — because async amortizes scheduler overlap across more decode iterations.
-- **TTFT is ~350 ms** with async scheduling enabled. This is ~125 ms higher than running with `--no-async-scheduling` (which lands at ~224 ms TTFT). The throughput gain is worth the added startup latency for almost any non-trivially-long generation; if you're running sub-100-token interactive Q&A and TTFT matters more than throughput, you can disable async.
-- **DFlash speculative decoding is acceptance-rate-limited**, not throughput-limited. Math and code prompts hit 41–56 tok/s because the architecture-matched drafter predicts syntactic structure well. Free-form prose drops to ~16 tok/s because acceptance falls below the break-even point and the engine settles toward base decode rate. This is the dense-27B equivalent of the variance the [related 35B-A3B-DFlash deployment](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash) reports (their median 83.9 tok/s, p95 127.5 tok/s, min 41.1 tok/s).
+- **DFlash speculative decoding is acceptance-rate-limited**, not throughput-limited. Math and code prompts hit 36–57 tok/s because the architecture-matched drafter predicts syntactic structure well. Free-form prose drops to ~15 tok/s because acceptance falls below the break-even point and the engine settles toward base decode rate. This is the dense-27B equivalent of the variance the [related 35B-A3B-DFlash deployment](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash) reports (their median 83.9 tok/s, p95 127.5 tok/s, min 41.1 tok/s).
+- **TTFT is ~325 ms** with async scheduling enabled. About 125 ms higher than running with `--no-async-scheduling` (which lands at ~200 ms TTFT). The throughput gain is worth the added startup latency for almost any non-trivially-long generation; if you're running sub-100-token interactive Q&A and TTFT matters more than throughput, you can disable async.
+- **Thinking mode token-budget gotcha**: with thinking enabled, the model spends a substantial fraction of its output budget on reasoning before the final answer block begins. With default `max_tokens` budgets of 200-600, **most prompts get truncated mid-`<think>`** and never reach the final answer in the response. To see the answer, either bump `max_tokens` substantially or pass `chat_template_kwargs.enable_thinking=false` per-request. The bench script `bench_aeon_thinking.py` reports `(TRUNCATED IN <think>)` per-prompt so you can see this directly.
 - **27B dense is a different perf class than 35B-A3B MoE** — the MoE activates ~3 B params per token and lands at ~84 tok/s median; the dense 27B activates all params per token and lands at ~32 tok/s median. Both are in-class for their architecture on GB10.
 
 #### Quality verification (every output spot-checked)
