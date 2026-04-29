@@ -3,7 +3,7 @@
 # This is the FULL production v2 config used to measure the benchmarks reported in README.md.
 # Same image, same flags, same env, same speculative-decoding pipeline.
 #
-# Image:       ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1
+# Image:       ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3
 # Built on:    vLLM v0.20.0 (101584af0a, tagged 2026-04-23) + 5 patches:
 #                #40092 SWA backend assert fix
 #                #40454 default-align mamba cache w/ spec-decode
@@ -41,7 +41,7 @@
 
 services:
   vllm:
-    image: ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1
+    image: ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3
     container_name: aeon-ultimate
     restart: unless-stopped
     network_mode: host

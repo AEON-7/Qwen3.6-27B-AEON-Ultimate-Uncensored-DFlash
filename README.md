@@ -163,7 +163,7 @@ hf download z-lab/Qwen3.6-27B-DFlash \
 
 [`docker-compose.spark-xs.yml`](docker-compose.spark-xs.yml) ships in this repo with the exact config measured above. Highlights:
 
-- **Image**: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1` (same image as the regular path)
+- **Image**: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3` (same image as the regular path)
 - **Body**: XS multimodal (`--quantization modelopt`)
 - **Speculative decoding**: DFlash, k=15, architecture-matched drafter (`--speculative-config '{"method":"dflash",...}'`)
 - **GB10-specific env**: `TORCH_CUDA_ARCH_LIST=12.1a`, `ENABLE_NVFP4_SM100=0`, `VLLM_USE_FLASHINFER_SAMPLER=1`, `VLLM_NVFP4_GEMM_BACKEND=flashinfer-cutlass`, `NVIDIA_FORWARD_COMPAT=1`
@@ -496,7 +496,22 @@ Wielding an uncensored model is genuinely different from wielding an aligned one
 
 ### DGX Spark (GB10 / sm_121a) — measured
 
-Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1`, DFlash spec-decode k=15 via `z-lab/Qwen3.6-27B-DFlash`, async scheduling enabled, `--max-model-len 200000`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.85`. **Single-stream, greedy** (`temperature=0`), no concurrent serving load. Both bench scripts ([`bench/bench_aeon.py`](bench/bench_aeon.py), [`bench/bench_aeon_thinking.py`](bench/bench_aeon_thinking.py)) ship in this repo so you can run them yourself to verify on your hardware.
+Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3` *(2026-04-28 — see [v3 release note](#v3-image-release-note) below)*, DFlash spec-decode k=15 via `z-lab/Qwen3.6-27B-DFlash`, async scheduling enabled, `--max-model-len 200000`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.85`. **Single-stream, greedy** (`temperature=0`), no concurrent serving load. Both bench scripts ([`bench/bench_aeon.py`](bench/bench_aeon.py), [`bench/bench_aeon_thinking.py`](bench/bench_aeon_thinking.py)) ship in this repo so you can run them yourself to verify on your hardware.
+
+#### v3 image release note
+
+The `qwen36-v3` image (built 2026-04-28) is a fresh build on the official **vLLM v0.20.0 release commit** (`88d34c6409`, published 2026-04-27) plus **FlashInfer v0.6.9 stable** (vs v2.1's `v0.6.9rc1`). Same 5 sm_121a patches re-applied (one obsoleted gracefully by upstream and now no-ops). vs v2.1 head-to-head on DGX Spark with the XS+DFlash recipe (same config, same 11-prompt suite, single-stream greedy):
+
+| | v2.1 | v3 | Δ |
+|---|---|---|---|
+| Thinking OFF median | 37.6 | 38.1 | +1.3 % |
+| Thinking OFF peak | 68.7 | 68.4 | −0.4 % |
+| Thinking OFF median TTFT | 266 ms | **247 ms** | **−7.1 %** |
+| **Thinking ON median** | 32.6 | **38.5** | **+18.1 %** |
+| **Thinking ON peak** | 56.7 | **71.3** | **+25.7 %** |
+| Thinking ON median TTFT | 245 ms | 249 ms | ~ same |
+
+Most of the win is on the **thinking-on path** (the default user-facing configuration) — vLLM v0.20.0 finalized perf changes that disproportionately benefit reasoning-token decode. Thinking-off is essentially equal at peak and modestly faster on TTFT and aggregate. v3 is now the recommended image; v2.1 remains pullable as `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1` if you need to roll back.
 
 #### Three configurations measured on Spark — pick the best for your use
 
@@ -610,7 +625,7 @@ We also ran the XS variant on the DGX Spark itself, in the same `vllm-aeon-ultim
 
 ## Configuration reference
 
-### NVFP4 on DGX Spark — full flag explanation (production v2.1 config)
+### NVFP4 on DGX Spark — full flag explanation (production v3 config)
 
 | Flag | Value | Why |
 |---|---|---|

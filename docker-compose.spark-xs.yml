@@ -18,7 +18,7 @@
 # safetensors). On Spark, DFlash decisively beats MTP on the same body — see Performance
 # section in README.md for the head-to-head numbers.
 #
-# Image:       ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1 (same image as docker-compose.yml)
+# Image:       ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3 (same image as docker-compose.yml)
 # Hardware:    DGX Spark (NVIDIA GB10, 128 GB unified memory, sm_121a)
 #
 # Required downloads (run once):
@@ -44,7 +44,7 @@
 
 services:
   vllm:
-    image: ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1
+    image: ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3
     container_name: aeon-ultimate-xs
     restart: unless-stopped
     network_mode: host

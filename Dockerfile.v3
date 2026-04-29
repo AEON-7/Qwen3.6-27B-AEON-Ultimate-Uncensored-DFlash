@@ -1,0 +1,143 @@
+# vllm-aeon-ultimate-dflash:qwen36-v3 — 2026-04-28 fresh build
+# Source-built vLLM v0.20.0 release commit (88d34c6409) targeting GB10 / sm_121a / DGX Spark
+#
+# What's NEW in v3 vs v2.1:
+#   ✓ vLLM commit 88d34c6409 — actual v0.20.0 release commit (published 2026-04-27)
+#       vs v2.1's 101584af0a (cut 2026-04-23, before release was finalized).
+#       Brings ~4 days of v0.20.0-branch bugfixes + the official release seal.
+#   ✓ FlashInfer v0.6.9 stable (released 2026-04-24) — replaces v0.6.9rc1 (2026-04-23).
+#       Same b12x SM121 NVFP4 GEMM backend, with rc-cycle fixes folded in.
+#   ✓ Same patch surface as v2.1 (verified upstream still missing the relevant
+#       fixes as of 2026-04-28 — see audit notes per patch below).
+#
+# What stays the same as v2.1 (deliberately — to isolate the vLLM/FlashInfer
+# upgrade as the only variable):
+#   • Base image: ghcr.io/aeon-7/vllm-spark-gemma4-nvfp4-awq:latest (CUDA 13.2 + torch nightly cu130)
+#   • TORCH_CUDA_ARCH_LIST="12.0+PTX" (JITs to sm_121a at runtime; safer than pinning)
+#   • TurboQuant @ AEON-7 fork (CUDA-graph-safe _POWERS cache; until 0xSero#12 merges)
+#   • Speculators v0.3 still SKIPPED (pydantic incompat unfixed in v0.3.0; vLLM has
+#       native --speculative-config so we don't actually need Speculators)
+#   • All 5 .py patches (idempotent — print "already applied" if upstream landed it)
+#
+# Audit per patch as of 2026-04-28 against vLLM v0.20.0 release tag:
+#   register_qwen3_5_text.py    — STILL NEEDED. PRs #36289/#36607/#36850 still closed
+#                                 unmerged; Qwen3_5MoeForCausalLM not in upstream registry.
+#   patch_cuda_optional_import.py — STILL NEEDED. RTLD_LAZY workaround for SM121 builds
+#                                 missing SM100-only mxfp4_experts_quant kernels.
+#                                 ENABLE_NVFP4_SM100=0 env helps at build time but
+#                                 dlopen at runtime still resolves all symbols by
+#                                 default; need lazy mode.
+#   patch_kv_cache_utils.py     — STILL NEEDED. v0.20.0 still has unfiltered
+#                                 `min_block_size = min([... for group in groups])`
+#                                 which crashes on hybrid linear-attn groups (block_size=None).
+#   patch_mrope_text_fallback.py — STILL NEEDED. Qwen3_5 doesn't implement
+#                                 SupportsMRoPE in vLLM HEAD; we provide the
+#                                 text-only T=H=W=arange fallback that matches
+#                                 the DFlash drafter's standard 1D RoPE distribution.
+#   patch_cudagraph_align.py    — STILL NEEDED defensively. PRs #40092/#40454 in
+#                                 v0.20.0 fixed *some* of the spec-decode capture
+#                                 alignment issues, but the FULL-only gate on the
+#                                 alignment filter in compilation.py persists, so
+#                                 PIECEWISE mode still silently skips alignment.
+#                                 Patch is idempotent — will no-op if upstream caught up.
+#
+# Build time on Spark: 25-50 min on warm ccache (post v2.1 build), 60-90 min cold.
+# Build:  docker build -t ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3 -f Dockerfile.v3 .
+# Push:   docker push ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3
+
+FROM ghcr.io/aeon-7/vllm-spark-gemma4-nvfp4-awq:latest
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ccache git \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV PIP_NO_CACHE_DIR=1 \
+    UV_SYSTEM_PYTHON=1 \
+    TORCH_CUDA_ARCH_LIST="12.0+PTX" \
+    MAX_JOBS=14 \
+    NVCC_THREADS=2 \
+    CMAKE_BUILD_PARALLEL_LEVEL=14 \
+    CCACHE_DIR=/root/.ccache \
+    USE_CCACHE=1 \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:$PATH \
+    VLLM_TEST_FORCE_FP8_MARLIN=1 \
+    ENABLE_NVFP4_SM100=0
+
+RUN python3 -c "import torch; print(f'torch={torch.__version__} CUDA={torch.version.cuda}')" && \
+    nvcc --version | tail -1 && \
+    ccache --version | head -1
+
+# Pin to v0.20.0 RELEASE commit (the actual published-release ref, 2026-04-27).
+# Our v2.1 used 101584af0a (cut 2026-04-23 from the v0.20.0 branch but pre-release).
+ARG VLLM_COMMIT=88d34c6409e9fb3c7b8ca0c04756f061d2099eb1
+RUN git clone https://github.com/vllm-project/vllm.git /workspace/vllm-src \
+ && cd /workspace/vllm-src \
+ && git checkout ${VLLM_COMMIT} \
+ && git log -1 --format='vLLM build pin: %H %s'
+
+WORKDIR /workspace/vllm-src
+
+RUN python3 use_existing_torch.py
+
+RUN uv pip install --system -r requirements/build.txt 2>/dev/null || \
+    uv pip install --system -r requirements/build/cuda.txt
+
+RUN uv pip install --system --no-build-isolation --no-deps . 2>&1 | tee /tmp/vllm-build.log | tail -100
+
+# FlashInfer v0.6.9 STABLE (2026-04-24) — replaces v0.6.9rc1 from v2.1.
+RUN uv pip uninstall --system flashinfer-python flashinfer-cubin flashinfer-jit-cache 2>/dev/null || true
+RUN uv pip install --system --no-deps \
+      "flashinfer-python @ git+https://github.com/flashinfer-ai/flashinfer.git@v0.6.9"
+
+RUN uv pip install --system "scipy>=1.11"
+RUN uv pip install --system --no-deps \
+      "turboquant @ git+https://github.com/AEON-7/turboquant.git@fix/cuda-graph-safe-qjl-powers"
+
+RUN python3 -c "import transformers; print(f'pre-pin transformers={transformers.__version__}')" && \
+    uv pip install --system "transformers>=5.6,<6"
+
+WORKDIR /
+RUN rm -rf /workspace/vllm-src
+
+# === Patches (audit notes in header; all idempotent) ===
+
+COPY patches/register_qwen3_5_text.py /opt/patches/
+RUN python3 /opt/patches/register_qwen3_5_text.py
+
+COPY patches/patch_cuda_optional_import.py /opt/patches/
+RUN python3 /opt/patches/patch_cuda_optional_import.py
+
+COPY patches/patch_kv_cache_utils.py /opt/patches/
+RUN python3 /opt/patches/patch_kv_cache_utils.py
+
+COPY patches/patch_mrope_text_fallback.py /opt/patches/
+RUN python3 /opt/patches/patch_mrope_text_fallback.py
+
+COPY patches/patch_cudagraph_align.py /opt/patches/
+RUN python3 /opt/patches/patch_cudagraph_align.py
+
+# === Verification ===
+RUN python3 -c "\
+import torch, vllm, flashinfer, turboquant; \
+print(f'POST vLLM={vllm.__version__}'); \
+print(f'POST flashinfer={flashinfer.__version__}'); \
+print(f'POST torch={torch.__version__} CUDA={torch.version.cuda}'); \
+print(f'POST turboquant={getattr(turboquant, \"__version__\", \"?\")}'); \
+from vllm.model_executor.models.registry import _TEXT_GENERATION_MODELS as T; \
+assert 'Qwen3_5MoeForCausalLM' in T, 'registry patch not applied'; \
+print('Qwen3_5MoeForCausalLM ->', T['Qwen3_5MoeForCausalLM']); \
+" && \
+    ls /usr/local/lib/python3.12/dist-packages/vllm/_C.abi3.so && \
+    echo 'image OK — vllm._C will load at runtime when --gpus all mounts libcuda.so.1'
+
+LABEL org.opencontainers.image.title="vllm-aeon-ultimate-dflash" \
+      org.opencontainers.image.description="AEON-7 vLLM container for Qwen3.6-27B-AEON-Ultimate-Uncensored on DGX Spark / GB10. v3: vLLM v0.20.0 release commit (88d34c6409, 2026-04-27) + FlashInfer v0.6.9 stable + 5 sm_121a patches (idempotent). DFlash speculative decoding (k=15) via z-lab/Qwen3.6-27B-DFlash drafter." \
+      org.opencontainers.image.source="https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DFlash" \
+      org.opencontainers.image.url="https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DFlash" \
+      org.opencontainers.image.documentation="https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DFlash#readme" \
+      org.opencontainers.image.version="v3" \
+      org.opencontainers.image.base.name="ghcr.io/aeon-7/vllm-spark-gemma4-nvfp4-awq:latest" \
+      vllm.compute_capability="sm_120+PTX" \
+      vllm.target_hardware="DGX Spark / GB10 / sm_121a" \
+      vllm.vllm_commit="88d34c6409e9fb3c7b8ca0c04756f061d2099eb1"
