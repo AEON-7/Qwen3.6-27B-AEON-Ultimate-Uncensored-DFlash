@@ -123,3 +123,16 @@ services:
         #     memory; 0.88+ thrashes. (RTX PRO 6000 has more headroom — it caps at 0.94.)
         #   - --max-num-batched-tokens 32768 is the ceiling. vLLM's inductor compile-range
         #     endpoint is [32768], so above 32k prefill falls back to eager mode.
+
+    # GPU exposure — required on hosts where Docker's default-runtime is not 'nvidia'.
+    # The DGX Spark base image ships with `default-runtime: nvidia` so this block is a
+    # no-op there, but on most other Linux hosts (default-runtime: runc) the container
+    # cannot see the GPU without it. Reported in issue #5; canonical Docker Compose v3
+    # spec for GPU reservation.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
