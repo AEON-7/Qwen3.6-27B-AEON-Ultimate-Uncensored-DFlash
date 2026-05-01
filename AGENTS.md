@@ -28,7 +28,7 @@ If your task is on RTX PRO 6000, **do not apply this file's flags wholesale** �
 
 | Thing | Value | Don't second-guess |
 |---|---|---|
-| Container image | `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3` (current production, 2026-04-28) | Don't substitute `vllm/vllm-openai:latest` — it has no sm_121a patches. v2.1 remains pullable for rollback (`:qwen36-v2.1`); the `:latest` tag still points to v2 and should be ignored — pin to `qwen36-v3`. |
+| Container image | `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3` (current production, 2026-04-28) | Don't substitute `vllm/vllm-openai:latest` — it has no sm_121a patches. As of 2026-04-30, **`:latest` now points at v3** (was previously stuck at v2.1 — fixed). v2.1 remains pullable for rollback (`:qwen36-v2.1`); pinning explicitly to `:qwen36-v3` is still the recommended practice for reproducibility. |
 | Hardware target | DGX Spark (NVIDIA GB10, sm_121a, 128 GB unified) | Don't apply Hopper / Ada tuning advice |
 | **Recommended body** | **`AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS`** (modelopt format, ~21 GB) — **winning Spark config 🏆** | Alternate body: `AEON-7/.../-NVFP4` (compressed-tensors, ~26 GB, simpler but slower). The XS body served with `--quantization modelopt --speculative-config '{"method":"dflash",...}'` lands at **38.5 / 71.3 tok/s thinking-on, 38.1 / 68.4 thinking-off** on Spark. |
 | Quantization | NVFP4 via patched CUTLASS path | **Don't force Marlin** — the patched CUTLASS path is faster than Marlin on this hardware. Use `--quantization modelopt` with the XS body, `--quantization compressed-tensors` with the regular `-NVFP4` body. |
@@ -136,7 +136,7 @@ image: ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:v1.2
 image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2     # different image; missing patches
 ```
 
-The current production tag is **`qwen36-v3`** (built 2026-04-28; vLLM v0.20.0 release commit `88d34c6409` + FlashInfer 0.6.9 stable). The `qwen36-v2.1` tag remains pullable for rollback. The `:latest` and `:qwen36-v2` tags still point at v2 and **should be considered stale** — agents must pin to `qwen36-v3` (or `qwen36-v2.1` if they have a specific rollback reason). v1.x predecessor tags lacked PR #40191 and produced import failures on sm_121a-only builds.
+The current production tag is **`qwen36-v3`** (built 2026-04-28; vLLM v0.20.0 release commit `88d34c6409` + FlashInfer 0.6.9 stable). The `qwen36-v2.1` tag remains pullable for rollback. **As of 2026-04-30, `:latest` now points at v3** (was previously stuck at v2.1 — corrected after several users hit v2.1-era bugs because they implicitly followed `:latest`). The `:qwen36-v2` tag still points at v2 by design and should not be used for new deployments. Agents should still pin explicitly to `:qwen36-v3` for reproducibility — `:latest` will move forward whenever a new image ships. v1.x predecessor tags lacked PR #40191 and produced import failures on sm_121a-only builds.
 
 ### 10. Don't `pip install` into the container
 
