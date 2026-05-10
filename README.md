@@ -498,6 +498,67 @@ Wielding an uncensored model is genuinely different from wielding an aligned one
 
 ## Performance
 
+### DGX Spark default dirty baseline - no patches, no DFlash, no tuning
+
+This is the transparency baseline: what a user sees if they pull the official
+community vLLM image and run the XS checkpoint with only the minimum load flags.
+It is intentionally **not** the recommended deployment.
+
+**Baseline image/config tested 2026-05-10**
+
+- Image: `vllm/vllm-openai:nightly`
+- vLLM: `0.20.2rc1.dev166+gf6490a284`
+- Model body: `AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS`
+- Quantization flag: `--quantization modelopt`
+- DFlash: **off**
+- Tool parser: **off**
+- Reasoning parser: **off** (`<think>` text streams in normal content)
+- CUDA graphs / torch compile: **off** via `--enforce-eager`
+- Tuned Spark flags: **none**
+- Max model length: vLLM/model default, reported by vLLM as `262144`
+- Benchmark: 6 natural prompt categories x 8 concurrency levels (`1, 4, 8, 16, 32, 64, 128, 256`), 200 output tokens, streaming TTFT/TPOT captured, thinking enabled in the chat template, **0 request errors**
+
+Exact dirty baseline command:
+
+```bash
+docker run -d \
+  --name qwen36-baseline-dirty \
+  --gpus all \
+  --network host \
+  --ipc host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  -v /path/to/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS:/models/aeon-xs:ro \
+  vllm/vllm-openai:nightly \
+  /models/aeon-xs \
+  --served-model-name qwen36-baseline \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --trust-remote-code \
+  --load-format safetensors \
+  --quantization modelopt \
+  --enforce-eager
+```
+
+Raw machine-readable result:
+[`bench/results/qwen36_dirty_baseline_eager_20260510T034652Z.json`](bench/results/qwen36_dirty_baseline_eager_20260510T034652Z.json)
+
+| Category | c=1 tok/s | c=1 TTFT | c=1 TPOT | Peak aggregate tok/s | c=256 aggregate tok/s | c=256 TTFT p50 | c=256 TPOT p50 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Coding | 10.82 | 198 ms | 92.45 ms | 412.55 @ c=256 | 412.55 | 8438 ms | 575.50 ms |
+| Math | 10.71 | 1301 ms | 93.39 ms | 449.50 @ c=256 | 449.50 | 7116 ms | 531.91 ms |
+| Reasoning | 10.69 | 266 ms | 93.58 ms | 437.01 @ c=256 | 437.01 | 8497 ms | 540.71 ms |
+| Prose | 10.72 | 235 ms | 93.29 ms | 444.78 @ c=256 | 444.78 | 8250 ms | 532.53 ms |
+| Natural language | 10.72 | 282 ms | 93.26 ms | 449.01 @ c=256 | 449.01 | 6921 ms | 533.44 ms |
+| Extraction / JSON | 10.74 | 319 ms | 93.08 ms | 422.77 @ c=256 | 422.77 | 9697 ms | 551.92 ms |
+
+Reading the baseline: default eager serving can batch work and reaches
+~413-450 aggregate tok/s at c=256, but the interactive path is slow:
+single-stream decode is only ~10.7 tok/s, and at c=256 each request falls to
+~1.7-1.9 tok/s with 6.9-9.7 s median TTFT. This is the floor the optimized
+DFlash/CUDA-graph/CUTLASS deployment is meant to improve for real agent and
+chat workloads.
+
 ### DGX Spark (GB10 / sm_121a) — measured
 
 Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3` *(2026-04-28 — see [v3 release note](#v3-image-release-note) below)*, DFlash spec-decode k=15 via `z-lab/Qwen3.6-27B-DFlash`, async scheduling enabled, `--max-model-len 200000`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.85`. **Single-stream, greedy** (`temperature=0`), no concurrent serving load. Both bench scripts ([`bench/bench_aeon.py`](bench/bench_aeon.py), [`bench/bench_aeon_thinking.py`](bench/bench_aeon_thinking.py)) ship in this repo so you can run them yourself to verify on your hardware.
