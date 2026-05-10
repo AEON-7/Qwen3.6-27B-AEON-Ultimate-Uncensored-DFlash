@@ -10,7 +10,7 @@ This file is the authoritative source. If a piece of public documentation contra
 
 ## ⚠️ Hardware scope: this file is for DGX Spark / GB10 / sm_121a
 
-**Every flag, env var, container reference, and "DO NOT UNDO" rule in this file targets the DGX Spark (NVIDIA GB10, sm_121a, 128 GB unified memory) deployment.** That is the AEON-7 team's primary, measured-and-validated hardware platform. The container image, the patch series in v3, the env var set, the `--gpu-memory-utilization 0.85` cap, the `--max-num-seqs 16` ceiling, the `ENABLE_NVFP4_SM100=0` build guard — all of it is GB10-specific.
+**Every flag, env var, container reference, and "DO NOT UNDO" rule in this file targets the DGX Spark (NVIDIA GB10, sm_121a, 128 GB unified memory) deployment.** That is the AEON-7 team's primary, measured-and-validated hardware platform. The container image, the v4 DFlash sliding-attention patch, the env var set, the `--gpu-memory-utilization` profile split, the `--max-num-seqs` profile split, and the `ENABLE_NVFP4_SM100=0` build guard — all of it is GB10-specific.
 
 **If you are operating on different hardware, the rules in this file do NOT directly apply.** Specifically:
 
@@ -28,17 +28,17 @@ If your task is on RTX PRO 6000, **do not apply this file's flags wholesale** �
 
 | Thing | Value | Don't second-guess |
 |---|---|---|
-| Container image | `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3` (current production, 2026-04-28) | Don't substitute `vllm/vllm-openai:latest` — it has no sm_121a patches. As of 2026-04-30, **`:latest` now points at v3** (was previously stuck at v2.1 — fixed). v2.1 remains pullable for rollback (`:qwen36-v2.1`); pinning explicitly to `:qwen36-v3` is still the recommended practice for reproducibility. |
+| Container image | `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v4` (current production, 2026-05-10) | Don't substitute stock `vllm/vllm-openai` for production — stock is useful as a transparency baseline, but it has no DFlash sliding-attention overlay and no packaged Spark defaults. `:latest` now points at v4; pin explicitly to `:qwen36-v4` for reproducibility. |
 | Hardware target | DGX Spark (NVIDIA GB10, sm_121a, 128 GB unified) | Don't apply Hopper / Ada tuning advice |
-| **Recommended body** | **`AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS`** (modelopt format, ~21 GB) — **winning Spark config 🏆** | Alternate body: `AEON-7/.../-NVFP4` (compressed-tensors, ~26 GB, simpler but slower). The XS body served with `--quantization modelopt --speculative-config '{"method":"dflash",...}'` lands at **38.5 / 71.3 tok/s thinking-on, 38.1 / 68.4 thinking-off** on Spark. |
+| **Recommended body** | **`AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS`** (modelopt format, ~21 GB) — **winning Spark config** | Alternate body: `AEON-7/.../-NVFP4` (compressed-tensors, ~26 GB, simpler but slower). The v4 XS+DFlash path averages **37.56 tok/s c=1** across six natural prompt categories vs **10.49 tok/s** for the dirty stock eager baseline. |
 | Quantization | NVFP4 via patched CUTLASS path | **Don't force Marlin** — the patched CUTLASS path is faster than Marlin on this hardware. Use `--quantization modelopt` with the XS body, `--quantization compressed-tensors` with the regular `-NVFP4` body. |
-| Spec decode | **DFlash k=15** via `z-lab/Qwen3.6-27B-DFlash` drafter (v2 — 2026-04-27 push; re-pull if you have a copy from before that date) | Don't disable; don't switch to ngram/EAGLE. **DO NOT use `--speculative-config '{"method":"qwen3_5_mtp",...}'` on Spark** — even though the XS body has a grafted MTP head, MTP method on Spark lands at 24.1 tok/s (vs DFlash's 38.5 thinking-on). MTP is for dedicated-VRAM Blackwell, not unified memory. |
-| GPU memory util cap | **0.85** (do not exceed 0.88) | Unified memory thrashes above 0.88 — this is not a typo |
-| Max model len | `200000` | Set with `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` |
-| Max num seqs | **16** | Looks low; correct for DFlash + GB10 unified memory budget |
-| Reasoning mode | enabled by default; pass `chat_template_kwargs.enable_thinking=false` to disable per request | Note: with v3 the **thinking-on path is *faster* than thinking-off** in headline median + peak (38.5 / 71.3 vs 38.1 / 68.4). Don't disable thinking by default to "speed things up" — that's a v2.1-era reflex; v3 inverted it. |
+| Spec decode | **DFlash k=15** via `z-lab/Qwen3.6-27B-DFlash` drafter | Don't disable; don't switch to ngram/EAGLE. **DO NOT use `--speculative-config '{"method":"qwen3_5_mtp",...}'` on Spark** unless you are deliberately running an ablation. |
+| GPU memory util cap | **0.75 gateway default**, **0.85 LLM-only production**, never above 0.88 | Unified memory thrashes above 0.88 — this is not a typo |
+| Max model len | `256000` gateway default, `200000` LLM-only production | Set with `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` |
+| Max num seqs | **64 gateway default**, **16 LLM-only full-context production** | 64 supports one large working chat plus many short subagents; 16 is safer when many sequences approach full context |
+| Reasoning mode | enabled by default; pass `chat_template_kwargs.enable_thinking=false` to disable per request | Don't disable thinking globally. It is a core capability of this model and the v4 stack parses reasoning cleanly. |
 
-The complete production configs are in [`docker-compose.yml`](docker-compose.yml) (regular `-NVFP4` body, simpler stack) and [`docker-compose.spark-xs.yml`](docker-compose.spark-xs.yml) (XS body, winning recipe). Both pin the `qwen36-v3` image. The compose files are **the source of truth**. Don't deviate without reading the rationale below.
+The complete production configs are in [`docker-compose.yml`](docker-compose.yml) (regular `-NVFP4` body, simpler legacy stack) and [`docker-compose.spark-xs.yml`](docker-compose.spark-xs.yml) (XS body, current winning recipe). The Spark XS compose pins the `qwen36-v4` image. The compose files are **the source of truth**. Don't deviate without reading the rationale below.
 
 ---
 
@@ -89,7 +89,7 @@ If you're confused because you read this is a "good Blackwell setting" — that 
 
 **Why this is wrong:** DGX Spark / GB10 has **unified memory** between CPU and GPU (128 GB shared). vLLM's `--gpu-memory-utilization` calculation assumes dedicated VRAM and over-allocates on unified architectures. Above 0.88, the system enters memory thrashing — KV cache pages get evicted to "CPU memory" which is the same physical memory, the OS swap subsystem starts paging, and throughput collapses to near-zero.
 
-Production setting: **0.85** (current) or 0.88 (absolute ceiling). Anything higher is a regression even though it looks like more headroom.
+Production setting: **0.75** when ASR/TTS/embeddings or other GPU sidecars share the Spark, **0.85** when the LLM is the only major GPU service, and 0.88 as the absolute ceiling. Anything higher is a regression even though it looks like more headroom.
 
 ### 5. Don't add Speculators v0.3.x
 
@@ -98,9 +98,9 @@ Production setting: **0.85** (current) or 0.88 (absolute ceiling). Anything high
 pip install speculators==0.3.1
 ```
 
-**Why this is wrong:** `speculators` v0.3.x has an **import-time pydantic v2.12 incompatibility** that crashes vLLM at boot. The v0.5.0 release fixes this, but our image v2.1 was built before v0.5.0 was tested with our DFlash drafter. Adding v0.3.x to this image will break it.
+**Why this is wrong:** external `speculators` packages are not required for the v4 path and can change imports in ways this image does not need. vLLM's native `--speculative-config '{"method":"dflash",...}'` already covers the DFlash path.
 
-vLLM's native `--speculative-config '{"method":"dflash",...}'` already covers DFlash + DynamicProposer without needing `speculators`. Don't add the package.
+Don't add the package at runtime. Rebuild the image only if a future release has a concrete feature we intentionally adopt.
 
 ### 6. Don't enable TurboQuant K8V4 KV compression
 
@@ -117,16 +117,16 @@ vLLM's native `--speculative-config '{"method":"dflash",...}'` already covers DF
 
 `--attention-backend xformers` and `--attention-backend triton` will boot but produce **silent quality degradation** on Qwen3.6's hybrid GDN layers. The flash_attn backend is the only one validated for this model on this image. Don't change it.
 
-### 8. Don't bump `--max-num-seqs` past 16
+### 8. Don't blindly bump `--max-num-seqs` past the documented profile
 
 ```
-# WRONG — looks "wasteful" of the 128 GB unified memory:
---max-num-seqs 64
+# WRONG for full-context LLM-only serving — looks "wasteful" of the 128 GB unified memory:
+--max-num-seqs 128
 ```
 
-**Why this is wrong:** The DFlash drafter has its **own KV state** (~1 GB of weights + per-sequence draft KV) and the spec-decode scheduler bookkeeping eats further into the budget. `--max-num-seqs 16` is the empirically-validated ceiling that keeps the GB10 unified memory budget under 0.85 utilization across the 200K context window.
+**Why this is wrong:** The DFlash drafter has its **own KV state** (~1 GB of weights + per-sequence draft KV) and the spec-decode scheduler bookkeeping eats further into the budget. Use `--max-num-seqs 64` for the gateway profile (`--max-model-len 256000 --gpu-memory-utilization 0.75`) when most agents are short-lived and side services need headroom. Use `--max-num-seqs 16` for LLM-only full-context production (`--max-model-len 200000 --gpu-memory-utilization 0.85`) when many sequences can approach the full window.
 
-Without DFlash spec decode (i.e., if you removed `--speculative-config`), you could raise this to 32-64. With DFlash on, 16 is correct.
+Without DFlash spec decode (i.e., if you removed `--speculative-config`), you can experiment higher, but that is a different deployment class. With DFlash on, stay inside the documented profile.
 
 ### 9. Don't downgrade the image tag
 
@@ -136,7 +136,7 @@ image: ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:v1.2
 image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2     # different image; missing patches
 ```
 
-The current production tag is **`qwen36-v3`** (built 2026-04-28; vLLM v0.20.0 release commit `88d34c6409` + FlashInfer 0.6.9 stable). The `qwen36-v2.1` tag remains pullable for rollback. **As of 2026-04-30, `:latest` now points at v3** (was previously stuck at v2.1 — corrected after several users hit v2.1-era bugs because they implicitly followed `:latest`). The `:qwen36-v2` tag still points at v2 by design and should not be used for new deployments. Agents should still pin explicitly to `:qwen36-v3` for reproducibility — `:latest` will move forward whenever a new image ships. v1.x predecessor tags lacked PR #40191 and produced import failures on sm_121a-only builds.
+The current production tag is **`qwen36-v4`** (built 2026-05-10; latest community vLLM nightly `0.20.2rc1.dev166+gf6490a284` + FlashInfer 0.6.11 + DFlash sliding-attention overlay). The `qwen36-v3` and `qwen36-v2.1` tags remain pullable for rollback. `:latest` now points at v4. Agents should still pin explicitly to `:qwen36-v4` for reproducibility — `:latest` will move forward whenever a new image ships. v1.x predecessor tags lacked PR #40191 and produced import failures on sm_121a-only builds.
 
 ### 10. Don't `pip install` into the container
 
@@ -172,15 +172,15 @@ These all appear in [`docker-compose.yml`](docker-compose.yml). Each line below 
 
 | Flag | Value | Why | Common stale advice to ignore |
 |---|---|---|---|
-| `--quantization compressed-tensors` | required | Tells vLLM the checkpoint uses the `compressed-tensors` format (carries NVFP4 metadata). | "Use `--quantization fp4` directly" — wrong; FP4 is encoded inside the compressed-tensors metadata |
+| `--quantization modelopt` | required for the XS body | Tells vLLM the recommended XS checkpoint uses modelopt NVFP4 metadata. Use `compressed-tensors` only with the older regular `-NVFP4` body. | "Use `--quantization fp4` directly" — wrong; FP4 is encoded inside checkpoint metadata |
 | `--kv-cache-dtype auto` | BF16 | TurboQuant K8V4 is unsupported on hybrid models. See "Don't undo #6". | "Use fp8 KV cache for memory savings" — works but reduces acceptance length under DFlash |
-| (async scheduling) | **enabled (default)** in v3 (and v2.1) | PR #40662 (baked into this image) fixed the spec-decode acceptance double-count in `/metrics`. Async scheduling now runs cleanly with DFlash and gains ~9–11 % median / ~11 % peak throughput by overlapping the scheduler with GPU work. **Tradeoff under v3**: median TTFT lands at **247 ms** (vs ~325 ms in v2.1 era — v3 actually *improved* TTFT despite async being on). | "Add `--no-async-scheduling` to fix DFlash metrics" — was true on stock v0.20.0 prior to PR #40662, **false on this image**. Don't disable async unless you're explicitly TTFT-sensitive AND have an unusual pattern. |
-| `--max-model-len` | `200000` | 200K context. KV cache holds ~219K slots, giving 2.87× max effective concurrency at full context. Trained context is 262K but the unified memory budget doesn't support full at our concurrency. | "Use the model's full trained context (262144)" — works only at `--max-num-seqs 1-4` |
-| `--max-num-seqs` | `16` | DFlash drafter budget. See "Don't undo #8". | "More concurrent seqs = more throughput" — true up to a point; we're past it for this stack |
-| `--max-num-batched-tokens` | `32768` | Prefill budget. v2.1 holds prefill stable to this ceiling on GB10. v1.2 was at 16384. | "Stock vLLM uses 65536" — OOMs on GB10 unified memory under concurrent long-context |
-| `--gpu-memory-utilization` | `0.85` | Unified memory cap. See "Don't undo #4". | "0.95 is the recommended default" — for dedicated VRAM only |
+| (async scheduling) | **enabled (default)** | Async scheduling overlaps scheduler work with GPU work and is part of the v4 profile. | "Add `--no-async-scheduling` by default" — don't do this unless you are running a targeted TTFT-only experiment. |
+| `--max-model-len` | `256000` gateway, `200000` LLM-only production | 256K exposes nearly the full trained context for agent gateways. 200K is the safer solo-LLM profile when many sequences may be long. | "Always use one universal max len" — wrong on unified memory; choose the profile |
+| `--max-num-seqs` | `64` gateway, `16` LLM-only production | DFlash drafter budget plus side-service headroom. See "Don't undo #8". | "More concurrent seqs = more throughput" — true only until queueing and unified-memory pressure dominate |
+| `--max-num-batched-tokens` | `32768` | Prefill budget and practical Spark ceiling for this stack. | "Stock vLLM uses 65536" — OOMs or falls off the optimized path on GB10 unified memory under concurrent long-context |
+| `--gpu-memory-utilization` | `0.75` gateway, `0.85` LLM-only production | Unified memory cap. See "Don't undo #4". | "0.95 is the recommended default" — for dedicated VRAM only |
 | `--enable-chunked-prefill` | flag | Required for long-context workloads to avoid prefill OOM. | None |
-| `--enable-prefix-caching` | flag | **Enabled since v2.1, still on in v3** (was off in v1.2). Two distinct features: (1) standard attention K/V prefix caching for the 16 full-attention layers, and (2) **`mamba_cache_mode=align`** for the 48 GDN layers — caches hybrid SSM hidden state across requests on Qwen3_5ForConditionalGeneration. Without this, multi-turn agent workloads pay full GDN re-prefill on every turn (75 % of the model). **Disabling prefix caching loses both** — don't do it. | "Disable prefix caching for spec-decode" — was a v1.x compat issue, fixed in v2.x patches |
+| `--enable-prefix-caching` | flag | Required for real agent workloads. It enables normal attention prefix caching plus Mamba/GDN align-cache behavior for shared-prefix multi-turn sessions. | "Disable prefix caching because benchmarks did" — wrong; the benchmark profile disables it only to isolate unique-prompt decode behavior |
 | `--load-format safetensors` | required | NVFP4 weights ship as safetensors. | None |
 | `--trust-remote-code` | required | Qwen 3.6 uses custom modeling code. | None |
 | `--enable-auto-tool-choice` | flag | Enables OpenAI-compatible tool calling. | None |
@@ -190,14 +190,14 @@ These all appear in [`docker-compose.yml`](docker-compose.yml). Each line below 
 | `--limit-mm-per-prompt '{"image":4,"video":2}'` | recommended | Hard caps on multimodal inputs per request. Prevents pathological MM overload. | None |
 | `--mm-encoder-tp-mode data` | required | Vision encoder TP strategy. | "Use `weight` mode" — incompatible with this model's vision tower layout |
 | `--mm-processor-cache-type shm` | recommended | Shared-memory mm processor cache. | None |
-| `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'` | required for spec decode | DFlash spec-decode at k=15. Confirmed best k for this dense 27B per AEON-7 production benchmarks 2026-04-24. | "Use EAGLE-3 / Medusa / ngram for better spec decode" — different drafter requirements; DFlash is the only one with a matching public drafter checkpoint for Qwen3.6-27B |
+| `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'` | required for spec decode | DFlash spec-decode at k=15. This is the v4 Spark recipe benchmarked in README.md. | "Use EAGLE-3 / Medusa / ngram for better spec decode" — different drafter requirements; DFlash is the matching public drafter checkpoint for Qwen3.6-27B |
 | `--served-model-name aeon-ultimate qwen36-ultimate aeon-fast aeon-deep` | flag | Four aliases for the same engine. Don't reduce — downstream tools assume these names exist. | None |
 
 ---
 
-## Patch series in the v3 image (the "what's actually in the binary")
+## Patch series in the v4 image (the "what's actually in the binary")
 
-The current production image is `vllm-aeon-ultimate-dflash:qwen36-v3`, built **2026-04-28**. It is sourced from **vLLM v0.20.0 release commit 88d34c6409** (the official 2026-04-27 published release, ~4 days of bugfixes ahead of v2.1's pre-release `101584af0a` snapshot). The upstream PRs called out below all landed in v0.20.0 and are part of the binary by virtue of using the release commit:
+The current production image is `vllm-aeon-ultimate-dflash:qwen36-v4`, built **2026-05-10**. It is sourced from the latest community vLLM nightly we validated (`0.20.2rc1.dev166+gf6490a284`) plus **FlashInfer 0.6.11** and a DFlash sliding-window-attention overlay from vLLM PR #40898.
 
 | PR | Title | What it fixes |
 |---|---|---|
@@ -207,16 +207,13 @@ The current production image is `vllm-aeon-ultimate-dflash:qwen36-v3`, built **2
 | #40662 | Unified spec-decode acceptance metrics | DFlash + DynamicProposer + EAGLE all report through the same `/metrics` schema |
 | #38479 | TurboQuant K8V4 backend | KV-cache compression backend (currently guarded out for hybrid models — see #39931 for the unblock) |
 
-Plus, **specific to v3** (delta from v2.1):
-
-- **FlashInfer 0.6.9 stable** (released 2026-04-24) — replaces v2.1's `0.6.9rc1` from 2026-04-23. Same b12x SM121 NVFP4 GEMM backend, with rc-cycle fixes folded in.
-- **vLLM v0.20.0 perf series** — most v0.20.0 perf PRs disproportionately benefit reasoning-token decode. On the XS+DFlash recipe this manifested as **+18 % thinking-on median, +26 % thinking-on peak** vs the v2.1 image on identical config (38.5 / 71.3 vs 32.6 / 56.7 tok/s).
-
-Carried over from v2.1 (unchanged in v3):
+- **FlashInfer 0.6.11** — newer GB10/Blackwell kernel package than v3's 0.6.9 stable.
+- **DFlash sliding-window-attention compatibility overlay** — applies the fix from vLLM PR #40898 while we wait for it to land upstream.
+- **Packaged profiles** — `gateway`, `production`, and `benchmark` profiles in the v4 container scripts so users can choose the correct memory/concurrency shape without hand-editing a long vLLM command.
+- **Measured stock-vs-v4 benchmark set** — 6 natural prompt categories x 8 concurrency levels through c=256, with TTFT and TPOT captured, now documented in `README.md`.
 
 - **TurboQuant @ AEON-7/turboquant fix/cuda-graph-safe-qjl-powers** — fork with the cached `_POWERS` per-device patch that prevents the CUDA-graph capture crash on TurboQuant boot (upstream PR 0xSero/turboquant#12 still pending)
-- **Speculators v0.3** still skipped (pydantic 2.12 incompat unfixed in v0.3.0; vLLM's native `--speculative-config` covers DFlash + MTP without it)
-- **All sm_121a python-level patches** re-applied: `register_qwen3_5_text`, `patch_cuda_optional_import`, `patch_kv_cache_utils`, `patch_mrope_text_fallback`, `patch_cudagraph_align`. One sub-patch (`patch_mamba_abstract`) was made *tolerant* in v3 because upstream v0.20.0 added an `assert mamba_block_size is not None` enforcing the invariant from elsewhere — that sub-patch now no-ops.
+- **External speculators package skipped** — vLLM's native `--speculative-config` covers DFlash without an extra import surface.
 
 If an agent is debugging an issue and finds a stack-overflow / forum thread saying "this is a known bug in vLLM," check the patch list above first. The bug may already be fixed in this image even though the upstream issue is still open.
 
@@ -256,9 +253,9 @@ If the body is the XS variant and you set `--quantization compressed-tensors`, y
 
 **Symptom:** Agent inspects the XS body's safetensors, sees 15 `mtp.*` tensors, and concludes "obviously use the MTP spec method."
 
-**What actually happens:** On DGX Spark, MTP method gets ~24 tok/s vs DFlash's ~38 tok/s on the same XS body — a ~37 % regression. The MTP head sits in the safetensors as ~0.85 GB of dead weight when DFlash spec is configured; that's intentional, the body works for both spec methods on different hardware.
+**What actually happens:** On DGX Spark, the current documented path is external DFlash k=15. The MTP head sits in the safetensors for compatibility with dedicated-VRAM Blackwell workflows, but it is not the Spark serving method.
 
-**Diagnostic:** Spec-decode metrics (`/metrics`) show `mean_acceptance_length` plateauing around 1.95–2.0 (MTP n=3 with bandwidth-bound verifier on Spark), single-stream tok/s under 28.
+**Diagnostic:** The serve command says `method:"qwen3_5_mtp"` instead of `method:"dflash"`, or the DFlash drafter model is not mounted.
 
 **Fix:** On DGX Spark, **always** use `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'`. The MTP method is correct for **dedicated-VRAM Blackwell** (RTX 5090, RTX PRO 6000, B100/B200), not unified memory. See [the hardware-routing section in README.md](README.md#hardware-compatibility-matrix).
 
@@ -266,11 +263,11 @@ If the body is the XS variant and you set `--quantization compressed-tensors`, y
 
 **Symptom:** Agent reads "thinking adds latency" advice from a generic LLM-deployment forum and bakes `chat_template_kwargs.enable_thinking=false` into the production config.
 
-**What actually happens:** On v3, **the thinking-on path is the higher-throughput path** — 38.5 tok/s median, 71.3 tok/s peak vs thinking-off's 38.1 / 68.4. vLLM v0.20.0 perf changes disproportionately benefit reasoning-token decode, so thinking-on stayed roughly flat at +0.4 % median while thinking-off only gained at TTFT.
+**What actually happens:** Disabling thinking globally removes one of the model's core capabilities and can break workflows that expect reasoning traces. v4 parses reasoning cleanly, so the gateway can decide when to show or hide it.
 
 **Diagnostic:** Server-side decode rate identical or worse with `enable_thinking=false` baked in vs allowing thinking to happen by default.
 
-**Fix:** Don't bake `enable_thinking=false` into the server-side defaults. The model and v3 image are *tuned* for thinking-on as the headline. Per-request override is fine for callers who want pure-content responses, but don't make it the global default. (This is a v3-era inversion of v2.1 advice — v2.1 had thinking-on slightly slower, v3 has thinking-on slightly faster.)
+**Fix:** Don't bake `enable_thinking=false` into the server-side defaults. The model and v4 image preserve thinking as a first-class capability. Per-request override is fine for callers who want pure-content responses, but don't make it the global default.
 
 ### Failure mode: "This is a 27B model, I'll allocate 64 GB GPU memory"
 
@@ -280,7 +277,7 @@ If the body is the XS variant and you set `--quantization compressed-tensors`, y
 
 **Diagnostic:** Throughput drops by 10-100× after the first long-context request; `dmesg` shows page-out/page-in churn.
 
-**Fix:** Use the documented `--gpu-memory-utilization 0.85` and `--max-num-seqs 16`. Resist the urge to "scale up."
+**Fix:** Use the documented profile: gateway defaults are `--gpu-memory-utilization 0.75 --max-num-seqs 64`; LLM-only full-context production is `--gpu-memory-utilization 0.85 --max-num-seqs 16`. Resist the urge to scale both context and concurrency at once.
 
 ### Failure mode: "The model isn't refusing — let me add safety system prompt"
 
@@ -320,7 +317,7 @@ Run these in order. If any fail, **don't try to fix the higher-level symptom —
 docker ps --filter "name=vllm-aeon-ultimate" --format "{{.Image}} | {{.Status}}"
 ```
 
-Expected: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3 | Up <time> (healthy)`. (v2.1 also acceptable if the operator hasn't yet bumped to v3; older tags warrant investigation.)
+Expected: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v4 | Up <time> (healthy)`. (`qwen36-v3` is acceptable only as an intentional rollback; older tags warrant investigation.)
 
 ### 2. vLLM accepted the config and booted
 

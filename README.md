@@ -20,12 +20,83 @@
 
 A **fully uncensored, capability-enhanced** abliteration of [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B), produced over **72 hours of continuous research** drawing on hundreds of parallel AI research agents, the industry's best published methodologies, custom in-house techniques, and yet-unreleased pre-public branches of next-generation abliteration software.
 
+## Performance — DGX Spark v4 vs Raw Baseline
+
+**This is the headline.** On DGX Spark / GB10, the v4 DFlash container turns the default “it runs, but it feels slow” baseline into a usable long-context local agent model.
+
+| Deployment | Container | DFlash | CUDA graphs | Tool calling | Avg c=1 decode |
+|---|---|---:|---:|---:|---:|
+| 🔴 **Raw baseline** | `vllm/vllm-openai:nightly` | off | off (`--enforce-eager`) | off | **10.49 tok/s** |
+| 🟢 **AEON v4 DFlash** | `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v4` | **k=15** | **on** | **on** | **37.56 tok/s** |
+
+**Average single-stream decode improvement: +258%** over the raw stock eager baseline.
+
+### Single-Stream Decode
+
+| Category | 🔴 Raw baseline | 🟢 v4 DFlash | Approx. speed increase | v4 TTFT | v4 TPOT |
+|---|---:|---:|---:|---:|---:|
+| Coding | 10.70 tok/s | **31.89 tok/s** | **+198%** | 191 ms | 30.5 ms |
+| Math | 10.01 tok/s | **37.76 tok/s** | **+277%** | 225 ms | 25.5 ms |
+| Reasoning | 10.54 tok/s | **42.41 tok/s** | **+303%** | 221 ms | 22.6 ms |
+| Prose | 10.59 tok/s | **31.85 tok/s** | **+201%** | 212 ms | 30.4 ms |
+| Natural language | 10.56 tok/s | **31.99 tok/s** | **+203%** | 183 ms | 30.3 ms |
+| Extraction / JSON | 10.56 tok/s | **49.48 tok/s** | **+369%** | 227 ms | 19.2 ms |
+| **Average** | **10.49 tok/s** | **37.56 tok/s** | **+258%** | ~210 ms | ~26.4 ms |
+
+### Practical Agent Concurrency
+
+At c=16, the optimized container keeps active streams much more responsive. Aggregate throughput improves most on structured agent/tool workloads, and TPOT drops across every category.
+
+| Category | 🔴 Raw c=16 aggregate / TPOT | 🟢 v4 c=16 aggregate / TPOT | Aggregate change |
+|---|---:|---:|---:|
+| Coding | 134.47 tok/s / 115.1 ms | **144.45 tok/s / 61.5 ms** | **+7%** |
+| Math | 134.38 tok/s / 115.1 ms | **193.94 tok/s / 41.6 ms** | **+44%** |
+| Reasoning | 134.86 tok/s / 115.4 ms | **187.82 tok/s / 46.6 ms** | **+39%** |
+| Prose | **135.34 tok/s** / 115.3 ms | 121.34 tok/s / **80.6 ms** | -10% aggregate, **30% lower TPOT** |
+| Natural language | 129.82 tok/s / 117.7 ms | **130.19 tok/s / 71.2 ms** | ~flat aggregate, **39% lower TPOT** |
+| Extraction / JSON | 133.30 tok/s / 115.4 ms | **219.11 tok/s / 43.2 ms** | **+64%** |
+
+### Stress Saturation
+
+c=256 is a saturation test, not the recommended interactive setting. The baseline can report high aggregate throughput by letting every stream crawl. v4 keeps per-active-stream TPOT far lower, but at c=256 requests queue hard and TTFT rises into minutes.
+
+| Category | 🔴 Raw c=256 TPOT | 🟢 v4 c=256 TPOT | v4 c=256 TTFT |
+|---|---:|---:|---:|
+| Coding | 575.5 ms | **70.0 ms** | 149.6 s |
+| Math | 531.9 ms | **42.7 ms** | 103.6 s |
+| Reasoning | 540.7 ms | **49.4 ms** | 109.3 s |
+| Prose | 532.5 ms | **77.1 ms** | 159.8 s |
+| Natural language | 533.4 ms | **72.9 ms** | 160.0 s |
+| Extraction / JSON | 551.9 ms | **43.2 ms** | 90.4 s |
+
+### What v4 Adds
+
+- Latest validated community vLLM nightly: `0.20.2rc1.dev166+gf6490a284`
+- FlashInfer 0.6.11
+- DFlash sliding-window-attention compatibility patch from vLLM PR #40898
+- CUTLASS NVFP4 fast path selected for GB10 / sm_121a
+- DFlash k=15 using `z-lab/Qwen3.6-27B-DFlash`
+- Qwen3 reasoning parser and Qwen3-Coder tool-call parser enabled
+- Packaged gateway/production/benchmark profiles so users do not have to hand-assemble the full vLLM command
+
+Raw benchmark files:
+
+- [`bench/results/qwen36_dirty_baseline_eager_20260510T034652Z.json`](bench/results/qwen36_dirty_baseline_eager_20260510T034652Z.json)
+- [`bench/results/qwen36_v4_fi0611_noprefix_full_sweep_20260510T065838Z.json`](bench/results/qwen36_v4_fi0611_noprefix_full_sweep_20260510T065838Z.json)
+- [`bench/results/qwen36_v4_fi0611_noprefix_true_single_20260510T065020Z.json`](bench/results/qwen36_v4_fi0611_noprefix_true_single_20260510T065020Z.json)
+
+The v4 sweep used natural prompts across coding, math, reasoning, prose, everyday language, and extraction/JSON. It intentionally used a short-context benchmark profile to isolate decode/scheduler behavior: `--max-model-len 2048`, `--max-num-seqs 256`, prefix caching disabled, thinking enabled, 200 output tokens, minimum 16 samples per point, 20% trimmed median. The production/gateway profiles keep prefix caching enabled and expose larger context windows.
+
+---
+
+## Model Variants
+
 Six release formats covering DGX Spark, RTX PRO 6000, RTX 5090, and pre-Blackwell hardware:
 
 | Release | Size | Target hardware | Use when |
 |---|---|---|---|
 | **[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16)** | 51 GB | A100 / H100 80 GB · RTX PRO 6000 Blackwell 96 GB | You have Ampere/Hopper or want full-precision reference weights |
-| **[NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4)** *(DFlash spec decode)* | 26 GB | DGX Spark (GB10 / sm_121a) | **Production-validated for DGX Spark.** llm-compressor format, `--quantization compressed-tensors`, DFlash drafter k=15 |
+| **[NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4)** | 26 GB | Simpler NVFP4 deployments | llm-compressor format, `--quantization compressed-tensors`. For best DGX Spark performance, use the v4 DFlash recipe with the XS body below. |
 | **[Multimodal-NVFP4-MTP](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP)** | 27 GB | RTX PRO 6000 Blackwell · B100/B200 | modelopt format, `--quantization modelopt`, MTP spec decode via grafted `mtp.*` head. Vision tower preserved. **GDN linear-attention preserved BF16** for best long-context fidelity. |
 | **[Text-NVFP4-MTP](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Text-NVFP4-MTP)** | 26 GB | RTX PRO 6000 · text-only deployments | Same recipe as Multimodal-NVFP4-MTP, vision tower stripped. **GDN preserved BF16.** |
 | **[Multimodal-NVFP4-MTP-XS](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS)** | 21 GB | RTX 5090 (32 GB) · tighter dedicated VRAM | Strategic split: GDN projection matmuls → NVFP4; **`linear_attn.conv1d` kept BF16** to preserve the recurrence-critical SSM convolution. Vision tower preserved. |
@@ -42,24 +113,24 @@ All six formats are **the same underlying model**. NVFP4 KL divergence vs BF16 s
 >
 > Pick regular if you have ≥48 GB VRAM and want best precision on long-context workloads; pick XS if you're on a 24–32 GB card and want maximum KV headroom with the SSM kernel still numerically stable.
 
-> **Hardware routing (measured, not theoretical):**
-> - **DGX Spark (GB10 / sm_121a)** → use **NVFP4 + DFlash**. Confirmed by head-to-head bench: DFlash beats MTP-XS by ~26 % median, ~52 % peak on Spark. See the [Performance section](#performance) for the matched-config numbers. *Spark's unified memory bandwidth doesn't reward MTP's high acceptance rate the way dedicated VRAM does.*
-> - **RTX PRO 6000 / RTX 5090 / B100/B200 (dedicated VRAM, sm_120/sm_100)** → use **NVFP4-MTP** or **NVFP4-MTP-XS**. MTP outperforms DFlash on dedicated-VRAM Blackwell. Measured numbers in the Performance section.
+> **Hardware routing:**
+> - **DGX Spark (GB10 / sm_121a)** → use the **v4 DFlash container** with the Multimodal-NVFP4-MTP-XS body. That is the benchmarked path above.
+> - **Dedicated-VRAM Blackwell** *(RTX PRO 6000 / RTX 5090 / B100/B200)* → use the MTP variants when you want the grafted native MTP head. Dedicated VRAM behaves differently from Spark's unified memory, so benchmark locally before copying Spark flags.
 
 ---
 
 ## Table of contents
 
-1. [What this is](#what-this-is)
-2. [Final stats](#final-stats)
-3. [Hardware compatibility matrix](#hardware-compatibility-matrix)
-4. [QuickStart — DGX Spark 🏆 (XS body + DFlash, recommended winner)](#quickstart--dgx-spark--xs-body--dflash-recommended-winner)
-5. [QuickStart — DGX Spark (alternate: regular `-NVFP4` body)](#quickstart--dgx-spark-alternate-regular--nvfp4-body)
-6. [QuickStart — A100 / H100 (BF16)](#quickstart--a100--h100-bf16)
-7. [In-depth: the abliteration methodology](#in-depth-the-abliteration-methodology)
-8. [In-depth: NVFP4 quantization](#in-depth-nvfp4-quantization)
-9. [Capability enhancement: the lifted "safety tax"](#capability-enhancement-the-lifted-safety-tax)
-10. [Performance](#performance)
+1. [Performance — DGX Spark v4 vs Raw Baseline](#performance--dgx-spark-v4-vs-raw-baseline)
+2. [Model variants](#model-variants)
+3. [What this is](#what-this-is)
+4. [Final stats](#final-stats)
+5. [Hardware compatibility matrix](#hardware-compatibility-matrix)
+6. [QuickStart — DGX Spark](#quickstart--dgx-spark--xs-body--dflash-recommended-winner)
+7. [QuickStart — A100 / H100 (BF16)](#quickstart--a100--h100-bf16)
+8. [In-depth: the abliteration methodology](#in-depth-the-abliteration-methodology)
+9. [In-depth: NVFP4 quantization](#in-depth-nvfp4-quantization)
+10. [Capability enhancement: the lifted "safety tax"](#capability-enhancement-the-lifted-safety-tax)
 11. [Configuration reference](#configuration-reference)
 12. [Responsibility, arbitration, and use](#responsibility-arbitration-and-use)
 13. [Provenance & credits](#provenance--credits)
@@ -124,13 +195,13 @@ The empirically observed "capability damage threshold" in the abliteration liter
 
 ## Hardware compatibility matrix
 
-The right variant depends on **memory architecture**, not just GPU model. Routing below is **measured**, not theoretical — see the [Performance section](#performance) for the head-to-head bench data.
+The right variant depends on **memory architecture**, not just GPU model. DGX Spark should use the v4 DFlash container above; dedicated-VRAM Blackwell can use the MTP variants when the native MTP head is desired.
 
 | Hardware | Recommended variant | Why this exact variant | Spec-decode method |
 |---|---|---|---|
-| **DGX Spark / GB10** *(sm_121a, unified memory)* | 🏆 **[`-Multimodal-NVFP4-MTP-XS`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS) body + DFlash + v3 image** *(winning config — 38.1 / 68.4 tok/s thinking-off, **38.5 / 71.3 thinking-on**)*. Alternate: [`-NVFP4`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4) *(simpler, 32.5 / 56.7)* | Spark prefers DFlash regardless of body. The XS body's NVFP4-quantized linear_attn projections share the same dispatch path as the rest (one fewer BF16↔FP4 cast per layer per token); the new drafter v2 (z-lab 2026-04-27 push) lifts mean accept length 2.0–2.3 → 2.60; the v3 image lifts thinking-on +18 % median / +26 % peak vs v2.1. **Don't use MTP method on Spark** — that lands at 24.1 tok/s on the same XS body. See [QuickStart](#quickstart--dgx-spark--xs-body--dflash-recommended-winner). | DFlash *k=15* via [`z-lab/Qwen3.6-27B-DFlash`](https://huggingface.co/z-lab/Qwen3.6-27B-DFlash) drafter (v2 — re-pull if you have a copy from before 2026-04-27) |
+| **DGX Spark / GB10** *(sm_121a, unified memory)* | 🏆 **[`-Multimodal-NVFP4-MTP-XS`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS) body + DFlash + `qwen36-v4` image** | Current recommended path. v4 packages latest validated vLLM nightly, FlashInfer 0.6.11, CUTLASS NVFP4, CUDA graphs, the DFlash sliding-window-attention patch, Qwen3 reasoning parsing, and Qwen3-Coder tool parsing. | DFlash *k=15* via [`z-lab/Qwen3.6-27B-DFlash`](https://huggingface.co/z-lab/Qwen3.6-27B-DFlash) drafter |
 | **B100 / B200** *(sm_100, dedicated FP4 silicon)* | **[`-Multimodal-NVFP4-MTP`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP)** (preferred — GDN BF16 fits) or [Text variant](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Text-NVFP4-MTP) | Native FP4 via `tcgen05` / UTCQMMA — fastest hardware for this format. Dedicated VRAM bandwidth lets MTP's high acceptance rate translate to throughput. | qwen3_5_mtp *n=3* (head grafted bf16, in repo) |
-| **RTX PRO 6000 Blackwell** *(sm_120, 96 GB dedicated)* | **[`-Multimodal-NVFP4-MTP`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP)** for vision · [`-Text-NVFP4-MTP`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Text-NVFP4-MTP) for text-only · [XS siblings](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS) for ~10 % faster decode | Measured 92–111 tok/s median on this card with MTP. XS hits 111.4 tok/s median, peak 124.7 — beats the regular variant by ~10 %. | qwen3_5_mtp *n=3* |
+| **RTX PRO 6000 Blackwell** *(sm_120, 96 GB dedicated)* | **[`-Multimodal-NVFP4-MTP`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP)** for vision · [`-Text-NVFP4-MTP`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Text-NVFP4-MTP) for text-only · [XS siblings](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS) for tighter memory budgets | Dedicated VRAM has different bandwidth behavior than Spark unified memory. Start with the MTP variants and benchmark locally. | qwen3_5_mtp *n=3* |
 | **RTX 5090** *(sm_120, 32 GB dedicated)* | **[`-Multimodal-NVFP4-MTP-XS`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS)** *(21 GB)* if you use vision · **[`-Text-NVFP4-MTP-XS`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Text-NVFP4-MTP-XS)** *(20 GB)* if text-only | Regular MTP variants (~27 GB) leave too little KV headroom on 32 GB. XS variants (conv1d preserved BF16, projection matmuls FP4) fit comfortably. | qwen3_5_mtp *n=3* |
 | **Other 24 GB cards** *(RTX 4090, RTX 3090, RTX A6000 ≤48 GB)* | **[`-Text-NVFP4-MTP-XS`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Text-NVFP4-MTP-XS)** *(20 GB)* | The smallest variant. Pre-Blackwell sm_<120 will dequantize NVFP4 → BF16 at the kernel level (no FP4 silicon win), but the model still works and KV fits. | qwen3_5_mtp *n=3* |
 | **H100 80 GB** *(sm_90)* | **[`-BF16`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16)** | NVFP4 dequants to BF16 at kernel level — works but no throughput gain. Use BF16 for cleaner code path. | none (or external EAGLE / Medusa drafter) |
@@ -142,12 +213,9 @@ The right variant depends on **memory architecture**, not just GPU model. Routin
 
 ## QuickStart — DGX Spark 🏆 (XS body + DFlash, recommended winner)
 
-**Pick this for DGX Spark.** Highest single-stream throughput we've measured on GB10 to date — **38.1 / 68.4 tok/s thinking-off, 38.5 / 71.3 tok/s thinking-on** (the default user-facing path). That's vs the prior `-NVFP4`+old-DFlash production's 32.5 / 56.7 — three stacked wins:
-> 1. The new **v3 image** (vLLM v0.20.0 release commit, FlashInfer 0.6.9 stable) — **+18 % thinking-on median, +26 % peak** over the v2.1 image
-> 2. The **`-Multimodal-NVFP4-MTP-XS` body** (modelopt format, GDN projections quantized) instead of the regular `-NVFP4` body — frees Spark unified-memory bandwidth
-> 3. The **DFlash drafter v2** that z-lab refreshed on 2026-04-27 (same 3.46 GB, re-trained weights) — mean accepted length per round bumped 2.0–2.3 → 2.60
+**Pick this for DGX Spark.** This is the current packaged winner for real GB10 use: the v4 XS+DFlash path averages **37.56 tok/s single-stream** across six natural prompt categories versus **10.49 tok/s** for the raw stock eager baseline. It preserves multimodal input, reasoning parsing, and OpenAI-compatible tool calls.
 
-> ⚠️ **The XS body has a grafted MTP head in its safetensors, but DO NOT use `--speculative-config '{"method":"qwen3_5_mtp",...}'` on DGX Spark.** That path lands at 24.1 tok/s median on Spark — bandwidth limited. DFlash decisively wins on unified memory; MTP is only correct for dedicated-VRAM Blackwell (RTX 5090 / RTX PRO 6000 / B100/B200).
+The XS body includes a grafted MTP head, but the Spark recipe intentionally uses **external DFlash k=15**. Do not switch the Spark compose file to `method:"qwen3_5_mtp"` unless you are deliberately running an ablation.
 
 ### Step 1 — Authenticate to HuggingFace and pull both models
 
@@ -167,11 +235,12 @@ hf download z-lab/Qwen3.6-27B-DFlash \
 
 [`docker-compose.spark-xs.yml`](docker-compose.spark-xs.yml) ships in this repo with the exact config measured above. Highlights:
 
-- **Image**: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3` (same image as the regular path)
+- **Image**: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v4` (also published as `:latest`)
 - **Body**: XS multimodal (`--quantization modelopt`)
 - **Speculative decoding**: DFlash, k=15, architecture-matched drafter (`--speculative-config '{"method":"dflash",...}'`)
 - **GB10-specific env**: `TORCH_CUDA_ARCH_LIST=12.1a`, `ENABLE_NVFP4_SM100=0`, `VLLM_USE_FLASHINFER_SAMPLER=1`, `VLLM_NVFP4_GEMM_BACKEND=flashinfer-cutlass`, `NVIDIA_FORWARD_COMPAT=1`
-- **Tuning**: `--max-model-len 200000 --max-num-seqs 16 --max-num-batched-tokens 32768 --gpu-memory-utilization 0.85` *(unified-memory caps unchanged from the prior recipe)*
+- **Default gateway tuning**: `--max-model-len 256000 --max-num-seqs 64 --max-num-batched-tokens 32768 --gpu-memory-utilization 0.75` *(leaves room for ASR/TTS/embedding side services)*
+- **Long-context production tuning**: `--max-model-len 200000 --max-num-seqs 16 --max-num-batched-tokens 32768 --gpu-memory-utilization 0.85` *(higher KV reserve when the LLM is the only major GPU service)*
 - **Multimodal**: `--limit-mm-per-prompt '{"image":4,"video":2}' --mm-encoder-tp-mode data --mm-processor-cache-type shm`
 - **Serving**: 5 aliases (`aeon-ultimate`, `qwen36-ultimate`, `aeon-fast`, `aeon-deep`, `aeon-ultimate-xs`) all routing to the same engine
 
@@ -199,27 +268,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 OpenAI-compatible endpoint at `http://localhost:8000/v1`. Tool calling, reasoning mode (`<think>` blocks), and multimodal input all enabled out of the box.
 
-> **Why this combo wins on Spark**: The XS body's NVFP4-quantized `linear_attn` projections share the same dispatch path as the rest of the body (one fewer BF16↔FP4 cast per layer per token), and the smaller in-memory footprint frees Spark's unified-memory bandwidth for the DFlash verifier's k=15 chains. The new drafter v2 also has a meaningfully better acceptance-rate fit on AEON-Ultimate's distribution — mean accepted length 2.60 vs 2.0–2.3 with the old drafter. Both improvements stack, lifting the headline single-stream rate by ~+15-21 %.
-
----
-
-## QuickStart — DGX Spark (alternate: regular `-NVFP4` body)
-
-The simpler validated path — same image, same DFlash drafter v2, but using the regular [`-NVFP4`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4) body (compressed-tensors format, GDN preserved BF16 throughout). Slightly slower (32.5 / 56.7 tok/s median/peak), but conceptually simpler — no XS strategic-quantization decisions to track. Use this if you prefer the "every part of the model is BF16 unless it's a heavy matmul" mental model.
-
-### Step 1 — Pull regular NVFP4 + DFlash drafter
-
-```bash
-hf download AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4 \
-  --local-dir ./models/aeon-ultimate-nvfp4
-
-hf download z-lab/Qwen3.6-27B-DFlash \
-  --local-dir ./models/dflash-drafter
-```
-
-### Step 2-4 — `docker compose up -d` using [`docker-compose.yml`](docker-compose.yml) (not `-f docker-compose.spark-xs.yml`)
-
-Same `--quantization compressed-tensors --speculative-config method:"dflash"` config as before; this is the prior-production deployment, untouched.
+> **Why this combo wins on Spark**: v4 keeps the XS body, CUTLASS NVFP4, DFlash k=15, CUDA graphs, tool parsing, reasoning parsing, and multimodal support in one pullable image. That is the path benchmarked at the top of this README.
 
 ---
 
@@ -283,7 +332,7 @@ The DGX Spark and BF16 quickstarts above are the AEON-7 team's measured-and-vali
 
 | Hardware | Recipe | Status | Recommended for |
 |---|---|---|---|
-| **NVIDIA RTX PRO 6000 Blackwell** (sm_120, 96 GB GDDR7) | [`other-hardware/rtx6000pro/`](other-hardware/rtx6000pro/) | Validated 2026-04-27 (community) | Single-GPU NVFP4 deployment with native sm_120 FP4 tensor-core throughput. Measured: **120 tok/s** math/code, **98 tok/s** long-form, **58–94 tok/s** multi-turn (5K shared context). Roughly 2-4× DGX Spark. |
+| **NVIDIA RTX PRO 6000 Blackwell** (sm_120, 96 GB GDDR7) | [`other-hardware/rtx6000pro/`](other-hardware/rtx6000pro/) | Community recipe | Single-GPU NVFP4 deployment with native sm_120 FP4 tensor-core throughput. Dedicated-VRAM flags differ from DGX Spark unified-memory flags. |
 
 If you have hardware not covered here and want to contribute a recipe, follow the pattern in `other-hardware/rtx6000pro/` — a folder, a tuned `docker-compose.yml`, and a README explaining the differences from the DGX Spark baseline.
 
@@ -484,7 +533,7 @@ The published evidence is consistent: post-training refusal-direction removal at
 | Young (2025), arXiv:2512.13655 | Yi-1.5-9B | DECCP abliteration | +1.51 pp GSM8K |
 | Xie et al. (2026) | (DGR safety-tax mitigation) | targeted safety-direction removal on DirectRefusal | **+30.2 % reasoning recovery** |
 
-AEON-Ultimate sits in the **KL < 0.001** regime where these gains are most commonly reported. We have not run a full benchmark sweep on this specific release yet — that's coming — but the existing capability spot-checks (10/10 coherent across math, code, reasoning, knowledge, and long-form) and the position of this model on the published Pareto front make the expected direction unambiguous.
+AEON-Ultimate sits in the **KL < 0.001** regime where these gains are most commonly reported. The capability spot-checks (10/10 coherent across math, code, reasoning, knowledge, and long-form) and the DGX Spark serving benchmarks at the top of this README are the current public measurement set.
 
 ### What the lifted overhead also means
 
@@ -496,236 +545,21 @@ Wielding an uncensored model is genuinely different from wielding an aligned one
 
 ---
 
-## Performance
-
-### DGX Spark default dirty baseline - no patches, no DFlash, no tuning
-
-This is the transparency baseline: what a user sees if they pull the official
-community vLLM image and run the XS checkpoint with only the minimum load flags.
-It is intentionally **not** the recommended deployment.
-
-**Baseline image/config tested 2026-05-10**
-
-- Image: `vllm/vllm-openai:nightly`
-- vLLM: `0.20.2rc1.dev166+gf6490a284`
-- Model body: `AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS`
-- Quantization flag: `--quantization modelopt`
-- DFlash: **off**
-- Tool parser: **off**
-- Reasoning parser: **off** (`<think>` text streams in normal content)
-- CUDA graphs / torch compile: **off** via `--enforce-eager`
-- Tuned Spark flags: **none**
-- Max model length: vLLM/model default, reported by vLLM as `262144`
-- Benchmark: 6 natural prompt categories x 8 concurrency levels (`1, 4, 8, 16, 32, 64, 128, 256`), 200 output tokens, streaming TTFT/TPOT captured, thinking enabled in the chat template, **0 request errors**
-
-Exact dirty baseline command:
-
-```bash
-docker run -d \
-  --name qwen36-baseline-dirty \
-  --gpus all \
-  --network host \
-  --ipc host \
-  --ulimit memlock=-1 \
-  --ulimit stack=67108864 \
-  -v /path/to/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS:/models/aeon-xs:ro \
-  vllm/vllm-openai:nightly \
-  /models/aeon-xs \
-  --served-model-name qwen36-baseline \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --trust-remote-code \
-  --load-format safetensors \
-  --quantization modelopt \
-  --enforce-eager
-```
-
-Raw machine-readable result:
-[`bench/results/qwen36_dirty_baseline_eager_20260510T034652Z.json`](bench/results/qwen36_dirty_baseline_eager_20260510T034652Z.json)
-
-| Category | c=1 tok/s | c=1 TTFT | c=1 TPOT | Peak aggregate tok/s | c=256 aggregate tok/s | c=256 TTFT p50 | c=256 TPOT p50 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Coding | 10.82 | 198 ms | 92.45 ms | 412.55 @ c=256 | 412.55 | 8438 ms | 575.50 ms |
-| Math | 10.71 | 1301 ms | 93.39 ms | 449.50 @ c=256 | 449.50 | 7116 ms | 531.91 ms |
-| Reasoning | 10.69 | 266 ms | 93.58 ms | 437.01 @ c=256 | 437.01 | 8497 ms | 540.71 ms |
-| Prose | 10.72 | 235 ms | 93.29 ms | 444.78 @ c=256 | 444.78 | 8250 ms | 532.53 ms |
-| Natural language | 10.72 | 282 ms | 93.26 ms | 449.01 @ c=256 | 449.01 | 6921 ms | 533.44 ms |
-| Extraction / JSON | 10.74 | 319 ms | 93.08 ms | 422.77 @ c=256 | 422.77 | 9697 ms | 551.92 ms |
-
-Reading the baseline: default eager serving can batch work and reaches
-~413-450 aggregate tok/s at c=256, but the interactive path is slow:
-single-stream decode is only ~10.7 tok/s, and at c=256 each request falls to
-~1.7-1.9 tok/s with 6.9-9.7 s median TTFT. This is the floor the optimized
-DFlash/CUDA-graph/CUTLASS deployment is meant to improve for real agent and
-chat workloads.
-
-### DGX Spark (GB10 / sm_121a) — measured
-
-Production config: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3` *(2026-04-28 — see [v3 release note](#v3-image-release-note) below)*, DFlash spec-decode k=15 via `z-lab/Qwen3.6-27B-DFlash`, async scheduling enabled, `--max-model-len 200000`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.85`. **Single-stream, greedy** (`temperature=0`), no concurrent serving load. Both bench scripts ([`bench/bench_aeon.py`](bench/bench_aeon.py), [`bench/bench_aeon_thinking.py`](bench/bench_aeon_thinking.py)) ship in this repo so you can run them yourself to verify on your hardware.
-
-#### v3 image release note
-
-The `qwen36-v3` image (built 2026-04-28) is a fresh build on the official **vLLM v0.20.0 release commit** (`88d34c6409`, published 2026-04-27) plus **FlashInfer v0.6.9 stable** (vs v2.1's `v0.6.9rc1`). Same 5 sm_121a patches re-applied (one obsoleted gracefully by upstream and now no-ops). vs v2.1 head-to-head on DGX Spark with the XS+DFlash recipe (same config, same 11-prompt suite, single-stream greedy):
-
-| | v2.1 | v3 | Δ |
-|---|---|---|---|
-| Thinking OFF median | 37.6 | 38.1 | +1.3 % |
-| Thinking OFF peak | 68.7 | 68.4 | −0.4 % |
-| Thinking OFF median TTFT | 266 ms | **247 ms** | **−7.1 %** |
-| **Thinking ON median** | 32.6 | **38.5** | **+18.1 %** |
-| **Thinking ON peak** | 56.7 | **71.3** | **+25.7 %** |
-| Thinking ON median TTFT | 245 ms | 249 ms | ~ same |
-
-Most of the win is on the **thinking-on path** (the default user-facing configuration) — vLLM v0.20.0 finalized perf changes that disproportionately benefit reasoning-token decode. Thinking-off is essentially equal at peak and modestly faster on TTFT and aggregate. v3 is now the recommended image; v2.1 remains pullable as `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v2.1` if you need to roll back.
-
-#### Four configurations measured on Spark — full evolution
-
-| Configuration | Body | Drafter / spec method | Image | Median | Peak | Aggregate |
-|---|---|---|---|---|---|---|
-| **🏆 XS + new DFlash + v3** *(2026-04-29 winner — current production, thinking-OFF)* | `-Multimodal-NVFP4-MTP-XS` *(modelopt)* | DFlash v2, *k=15* | **`v3`** | **38.1 tok/s** | **68.4 tok/s** *(Code Python)* | 26.3 tok/s |
-| **🏆 XS + new DFlash + v3 — thinking ON** *(default user-facing path, biggest win)* | same | same | `v3` | **38.5 tok/s** | **71.3 tok/s** ⚡ *(Reasoning)* | 31.1 tok/s |
-| XS + new DFlash + v2.1 *(prior peak)* | `-Multimodal-NVFP4-MTP-XS` | DFlash v2 | v2.1 | 37.6 tok/s | 68.7 tok/s | 25.9 tok/s |
-| Regular NVFP4 + old DFlash + v2.1 *(original production)* | `-NVFP4` *(compressed-tensors)* | DFlash v1 | v2.1 | 32.5 tok/s | 56.7 tok/s | 21.0 tok/s |
-| XS + MTP + v2.1 *(spec-method ablation)* | `-Multimodal-NVFP4-MTP-XS` | qwen3_5_mtp *n=3* | v2.1 | 24.1 tok/s | 27.5 tok/s | 20.7 tok/s |
-
-**Cumulative improvement vs original production (regular `-NVFP4` + old DFlash + v2.1)**:
-- Thinking-off median: **+17 %** (32.5 → 38.1)
-- Thinking-off peak: **+21 %** (56.7 → 68.4)
-- **Thinking-on median: +18 %** (32.6 → 38.5)
-- **Thinking-on peak: +26 %** (56.7 → 71.3)
-- Median TTFT: **−24 %** (325 → 247 ms)
-
-**Three stacked wins, all measured on identical hardware/config**:
-1. **DFlash drafter v2** (z-lab 2026-04-27 push) — re-trained drafter; mean accepted length per round 2.0–2.3 → 2.60.
-2. **XS body via modelopt** — `linear_attn` projections at NVFP4 share the same dispatch path as the rest (one fewer BF16↔FP4 cast per layer per token); smaller footprint frees Spark unified-memory bandwidth.
-3. **v3 image** (vLLM v0.20.0 release commit + FlashInfer v0.6.9 stable) — the v0.20.0 perf series disproportionately lifts reasoning-token decode (thinking-on path).
-
-The MTP-XS row confirms the routing call: **MTP underperforms on Spark even with the same XS body** — the bandwidth limitation we identified earlier holds. DFlash is decisively the right spec method for unified-memory hardware.
-
-#### 🏆 Headline single-stream numbers — v3 image, XS+DFlash, DGX Spark
-
-| Metric | **Thinking OFF** | **Thinking ON** *(default user-facing path)* |
-|---|---|---|
-| Peak decode rate | **68.4 tok/s** (Code Python) | **71.3 tok/s** ⚡ (Reasoning) |
-| Median decode rate | **38.1 tok/s** | **38.5 tok/s** ⚡ |
-| Min decode rate | 18.8 tok/s (Decode 256) | 24.3 tok/s (Long-form) |
-| Median TTFT | 247 ms | 249 ms |
-| Aggregate over 11-prompt suite | 2,922 tok / 110.9 s = 26.3 tok/s | 3,768 tok / 121.0 s = 31.1 tok/s |
-
-⚡ **Notable:** with v3 (vLLM v0.20.0 release) the thinking-on path runs *faster* than thinking-off in headline median + peak — that's a v0.20.0 perf change disproportionately benefiting reasoning-token decode. **+18% median / +26% peak vs the prior v2.1 image** on this same config (v2.1 thinking-on was 32.6 / 56.7).
-
-#### By prompt class — v3, winning config (XS body + new DFlash, thinking OFF)
-
-| Class | Median tok/s | Peak tok/s | Notes |
-|---|---|---|---|
-| **Code** (Python, Rust, SQL) | 51.0 | **68.4** | Peak — Code Python; new drafter aligns better with code distribution |
-| **Math** (arithmetic, calculus, word problems) | 48.4 | 51.7 | Short, structured, high DFlash acceptance |
-| **Reasoning** (transitive syllogism) | 45.5 | 45.5 | n=1 |
-| Long-form (ZKP exposition) | 23.8 | 23.8 | n=1 |
-| Security research (SQLi PoCs) | 24.1 | 24.1 | n=1; complied with research framing |
-| Pure decode (256 / 512 tok essays) | 19.6 | 20.0 | Lower DFlash acceptance on free-form prose |
-
-#### By prompt class — v3, thinking ON (where v3's biggest win lives)
-
-| Class | Median tok/s | Peak tok/s | vs v2.1 thinking-on |
-|---|---|---|---|
-| **Reasoning** | **71.3** | 71.3 | +25.7 % (was 56.7) |
-| **Math** | 54.5 | 55.2 | +12.8 % (was 48.3) |
-| **Code** | 38.5 | 44.7 | +18.1 % (was 32.6) |
-| Pure decode | 27.4 | 28.9 | -5.2 % (was 28.9) |
-| Long-form | 24.3 | 24.3 | -14 % (was 28.3) — n=1, noisy |
-| Security research | 25.1 | 25.1 | 0.0 % (was 25.1) |
-
-Reasoning, math, and code — the highest-acceptance classes — see the largest v3 wins. Long-form / pure-decode are noisier (n=1-2) and within sample variance.
-
-> **Peak — 68.7 tok/s** on Code Python with thinking OFF (vs prior production's 56.7). The new DFlash drafter v2 lifts every category, with the largest gains on Code and Reasoning where the drafter's training distribution overlaps well with the prompts. Mean accepted length per round: 2.60 (vs 2.0–2.3 on the prior drafter).
-
-#### Benchmark methodology
-
-The headline numbers are **single-stream, sequential, greedy decoding** with no concurrent traffic on the engine. This is by design — single-stream is the cleanest signal for the model's decode rate and lets us compare like-for-like against published numbers from other speculative-decoding setups.
-
-**Under concurrent serving, expect per-stream throughput to scale roughly inversely with concurrency.** Two concurrent streams ≈ half per-stream tok/s; eight concurrent streams ≈ one-eighth. The model is doing the same total work; you're dividing it across N streams. If your production workload is multi-user, the relevant metric is **aggregate** throughput (load-tested with a tool like `locust` or `wrk`), not per-stream rate.
-
-If you measure 10-15 tok/s per stream while running 2-4 concurrent requests on a real chat workload, that's roughly consistent with our 32 single-stream median divided by concurrency — not a regression.
-
-#### What the numbers mean
-
-- **DFlash speculative decoding is acceptance-rate-limited**, not throughput-limited. Math and code prompts hit 36–57 tok/s because the architecture-matched drafter predicts syntactic structure well. Free-form prose drops to ~15 tok/s because acceptance falls below the break-even point and the engine settles toward base decode rate. This is the dense-27B equivalent of the variance the [related 35B-A3B-DFlash deployment](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash) reports (their median 83.9 tok/s, p95 127.5 tok/s, min 41.1 tok/s).
-- **TTFT is ~325 ms** with async scheduling enabled. About 125 ms higher than running with `--no-async-scheduling` (which lands at ~200 ms TTFT). The throughput gain is worth the added startup latency for almost any non-trivially-long generation; if you're running sub-100-token interactive Q&A and TTFT matters more than throughput, you can disable async.
-- **Thinking mode token-budget gotcha**: with thinking enabled, the model spends a substantial fraction of its output budget on reasoning before the final answer block begins. With default `max_tokens` budgets of 200-600, **most prompts get truncated mid-`<think>`** and never reach the final answer in the response. To see the answer, either bump `max_tokens` substantially or pass `chat_template_kwargs.enable_thinking=false` per-request. The bench script `bench_aeon_thinking.py` reports `(TRUNCATED IN <think>)` per-prompt so you can see this directly.
-- **27B dense is a different perf class than 35B-A3B MoE** — the MoE activates ~3 B params per token and lands at ~84 tok/s median; the dense 27B activates all params per token and lands at ~32 tok/s median. Both are in-class for their architecture on GB10.
-
-#### Quality verification (every output spot-checked)
-
-| Prompt | Result |
-|---|---|
-| `47 × 83` step-by-step | Correct partial-products algorithm, correct answer |
-| Derivative of `x³ − 2x² + 5x − 1` | Identified power rule, correct stepwise solution |
-| Bat-and-ball ($1.10) puzzle | Avoided intuition trap, set up algebraic system |
-| Python Fibonacci memoization | Idiomatic with default-arg memo dict + docstring |
-| Rust `&str` → reversed `String` | Used `unicode_segmentation` crate, grapheme-correct |
-| SQL top-3 customers JOIN | Correct GROUP BY + ORDER BY DESC LIMIT 3 |
-| Transitive syllogism (bloops/razzles/lazzles) | Correct, structured proof |
-| ZKP for basic-crypto audience | Structured multi-paragraph pedagogy |
-| Security research / SQLi PoCs | Complied with research framing, structured 3-class breakdown |
-
-### RTX PRO 6000 Blackwell (sm_120, 96 GB) — measured
-
-Single-stream, greedy, thinking OFF; vLLM `--quantization modelopt --speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3}'`, `--max-model-len 200000 --max-num-seqs 32 --max-num-batched-tokens 32768 --gpu-memory-utilization 0.94`. Same 11-prompt suite as the DGX Spark numbers above ([`bench/bench_aeon.py`](bench/bench_aeon.py)).
-
-| Metric | **Multimodal-NVFP4-MTP** *(GDN BF16, 27 GB)* | **Multimodal-NVFP4-MTP-XS** *(GDN NVFP4, 21 GB)* |
-|---|---|---|
-| Median decode rate | 101.5 tok/s | **111.4 tok/s** |
-| Peak decode rate | 108.4 tok/s (Code Python) | **124.7 tok/s** (Code SQL) |
-| Median TTFT | 74 ms | 64 ms |
-| Aggregate over 11-prompt suite | ~92 tok/s | 94.5 tok/s |
-| MTP acceptance rate | 67.7 % | 69.2 % |
-
-The XS variant is **~10 % faster median, ~15 % faster peak** on RTX PRO 6000. Most of the win comes from the smaller model footprint freeing up KV-cache bandwidth and the GDN projections sharing the same NVFP4 dispatch path as the rest of the body (one less BF16↔FP4 cast per layer per token). Spec-decode acceptance is essentially identical, so quality on these prompts is unchanged.
-
-> **Why we still ship both**: long-context fidelity (>50K-token recurrence-state stability) was not measured by this 11-prompt suite. The regular variant's BF16 GDN preserves recurrence numerics exactly, which matters for sustained agentic workloads with long shared state. If you have the VRAM, regular is the conservative choice; if you're on a 24–32 GB card, XS is what fits and runs ~10 % faster.
-
-### DGX Spark — MTP-XS comparison (head-to-head against DFlash)
-
-We also ran the XS variant on the DGX Spark itself, in the same `vllm-aeon-ultimate-dflash:qwen36-v2.1` container (which serves both `--quantization compressed-tensors`+DFlash and `--quantization modelopt`+MTP code paths) under matched config — `--max-num-seqs 16 --max-num-batched-tokens 32768 --gpu-memory-utilization 0.85 --max-model-len 200000`, single-stream, greedy. Same 11-prompt suite. The MTP run uses `--speculative-config '{"method":"qwen3_5_mtp","num_speculative_tokens":3}'`.
-
-| Metric | **NVFP4 + DFlash** *(production)* | **NVFP4-MTP-XS** | Δ |
-|---|---|---|---|
-| Median decode rate (thinking OFF) | 32.5 tok/s | 24.1 tok/s | **−26 %** |
-| Peak decode rate (thinking OFF) | 56.7 tok/s | 27.5 tok/s | −52 % |
-| Median decode rate (thinking ON) | 28.3 tok/s | 23.0 tok/s | −19 % |
-| Median TTFT | 325 ms | 298 ms | similar |
-| Spec-decode acceptance | DFlash *k=15* chains | MTP 66.3 % (1.99 / 3.0 mean accepted) | — |
-
-**On DGX Spark, DFlash wins.** MTP loses ~26 % median and ~52 % peak versus DFlash — the opposite of what we measured on RTX PRO 6000. The reason is structural: DGX Spark's GB10 unified memory has lower aggregate bandwidth than dedicated VRAM Blackwell parts, and DFlash's k=15 chain pulls more verified tokens per round than MTP's n=3 even at lower per-token acceptance. MTP's higher acceptance rate (66 %) doesn't translate to throughput when the engine is bandwidth-limited. The peak-rate gap (56.7 vs 27.5) is the most diagnostic: DFlash's amortization shines exactly where MTP's small chain can't reach.
-
-> **Hardware routing locked in:**
-> - **DGX Spark (GB10 / sm_121a, unified memory) → use NVFP4 + DFlash.** This is the production-validated path. Don't switch to MTP variants on Spark.
-> - **RTX PRO 6000 / RTX 5090 / B100/B200 (dedicated VRAM, sm_120/sm_100) → use NVFP4-MTP or NVFP4-MTP-XS.** MTP delivers +10 % over no-speculation and beats DFlash on dedicated VRAM.
-
-### Other hardware
-
-- **B100 / B200**: not measured by us; expect substantially higher throughput than DGX Spark due to higher-end FP4 silicon and larger memory bandwidth.
-- **RTX 5090 (sm_120, 32 GB)**: not measured by us yet; the Text-XS variant is the right fit (~20 GB on disk → ~21 GB at runtime, leaves ~10 GB for KV at `--max-model-len 65536`).
-- **A100 / H100 (BF16)**: BF16 path, no FP4 advantage. Expect 30–50 tok/s single-stream decode at the recommended config.
-
----
-
 ## Configuration reference
 
-### NVFP4 on DGX Spark — full flag explanation (production v3 config)
+### NVFP4 on DGX Spark — full flag explanation (v4 XS + DFlash config)
 
 | Flag | Value | Why |
 |---|---|---|
-| `--quantization compressed-tensors` | required | Tells vLLM the checkpoint uses the `compressed-tensors` format (which carries NVFP4 metadata). |
+| `--quantization modelopt` | required for the XS body | The recommended `-Multimodal-NVFP4-MTP-XS` checkpoint is modelopt format. Use `compressed-tensors` only with the older regular `-NVFP4` body. |
 | `--kv-cache-dtype auto` | required | BF16 KV cache. TurboQuant K8V4 (3.76× compression) is *unsupported* on hybrid attention + Mamba models — vLLM raises a deliberate guard. The 27B-AEON stack stays on uniform BF16 KV until a layer-skipping option ships. |
-| (async scheduling) | **enabled (default)** | Async scheduling overlaps scheduler work with GPU work for ~9–11 % median throughput gain. PR #40662 (in this image) fixed the prior DFlash spec-decode acceptance double-count, so async is now safe to leave at the default-enabled state. **Tradeoff**: TTFT increases by ~125 ms vs `--no-async-scheduling`. Disable only if you're TTFT-sensitive and willing to give up the throughput. |
-| `--max-model-len` | `200000` | 200K context — leaves headroom under the trained 262K. KV cache holds ~219K slots, so `200000 / 219K = 2.87×` max effective concurrency at full context. Raise to 262144 only with a corresponding cut to `--max-num-seqs`. |
-| `--max-num-seqs` | `16` | 16 concurrent sequences. Lower than you'd expect because the DFlash drafter's own KV state and the spec-decode scheduler bookkeeping eat into the unified-memory budget. **Without DFlash, raise to 32–64.** |
-| `--max-num-batched-tokens` | `32768` | Prefill budget. Higher than the v1.2 default (16384) because v2.1 holds prefill stable to this ceiling on GB10. **This is the ceiling** — vLLM's inductor compile-range endpoint is `[32768]`, so above 32k prefill falls back to eager mode. Raising to 65536+ on DGX Spark also OOMs the unified memory budget. |
-| `--gpu-memory-utilization` | `0.85` | Leaves 15 % headroom. **Do not exceed 0.88 on DGX Spark** — unified memory thrashes above that. |
+| (async scheduling) | **enabled (default)** | Async scheduling overlaps scheduler work with GPU work and is part of the v4 serving profile. Disable only for a deliberate TTFT-only experiment. |
+| `--max-model-len` | `256000` gateway default, `200000` solo LLM production | 256K exposes almost the full trained context for agent gateways. Use 200K when the LLM is the only major GPU service and you want more full-context KV safety. |
+| `--max-num-seqs` | `64` gateway default, `16` solo full-context production | 64 gives agentic gateways room for one large working chat plus many short-lived subagents. Drop to 16 when you expect many sequences near the full 200K context window. |
+| `--max-num-batched-tokens` | `32768` | Prefill budget. This is the practical ceiling on Spark; above 32K, compile coverage and unified-memory pressure get worse. |
+| `--gpu-memory-utilization` | `0.75` gateway default, `0.85` solo LLM production | Use 0.75 when ASR, TTS, embeddings, ComfyUI, or other GPU services share the Spark. 0.85 is the long-context LLM-only cap. **Do not exceed 0.88 on DGX Spark** — unified memory thrashes above that. |
 | `--enable-chunked-prefill` | on | Required for long-context workloads to avoid prefill OOM. |
-| `--enable-prefix-caching` | on | Enabled in v2.1 (was off in v1.2). **Two features in one flag** on this hybrid model: (1) standard attention K/V prefix caching for the 16 full-attention layers, and (2) `mamba_cache_mode=align` (auto-enabled for `Qwen3_5ForConditionalGeneration` since it reports `supports_mamba_prefix_caching=True`) — caches the 48 GDN layers' recurrent state across requests, so multi-turn agent workloads with a shared system prompt skip re-rolling 75 % of the model on turns 2+. The mamba half is flagged "experimental" by vLLM (a warning prints at boot) but it's doing real work. Major TTFT win for any agent workload; near-zero benefit for unique-prompt benchmarks. |
+| `--enable-prefix-caching` | on | Required for real agent workloads. On this hybrid model it enables normal attention prefix caching plus Mamba/GDN align-cache behavior, so multi-turn sessions with a shared system prompt avoid re-prefilling much of the recurrent state. The benchmark profile disables it only to isolate unique-prompt decode behavior. |
 | `--load-format safetensors` | required | NVFP4 weights ship as safetensors. |
 | `--trust-remote-code` | required | Qwen 3.6 uses custom modeling code. |
 | `--enable-auto-tool-choice` | on | Enables OpenAI-compatible tool calling. |
@@ -735,9 +569,10 @@ We also ran the XS variant on the DGX Spark itself, in the same `vllm-aeon-ultim
 | `--limit-mm-per-prompt '{"image":4,"video":2}'` | recommended | Hard caps on multimodal inputs per request. |
 | `--mm-encoder-tp-mode data` | required | Vision encoder TP strategy. |
 | `--mm-processor-cache-type shm` | recommended | Shared-memory mm processor cache. |
-| `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'` | recommended | DFlash spec-decode at k=15. Confirmed best k for this dense 27B per AEON-7 production benchmarks 2026-04-24. |
+| `--mm-shm-cache-max-object-size-mb 256` | recommended | Lets larger Qwen3.6 image/video processor objects fit in the multimodal shared-memory cache. |
+| `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'` | recommended | DFlash spec-decode at k=15. This is the v4 Spark recipe benchmarked at the top of the README. |
 
-### Required environment variables (DGX Spark NVFP4 / v2.1 image)
+### Required environment variables (DGX Spark NVFP4 / v4 image)
 
 | Variable | Value | Why |
 |---|---|---|
