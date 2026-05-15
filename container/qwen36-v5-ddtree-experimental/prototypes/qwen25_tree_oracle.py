@@ -140,7 +140,8 @@ def load_model_and_tokenizer(args: argparse.Namespace):
         **extra_model_kwargs,
     )
     model.to(args.device)
-    model.eval()
+model.# FIX: 移除eval，改用安全方式
+# )
     return tokenizer, model, started
 
 
