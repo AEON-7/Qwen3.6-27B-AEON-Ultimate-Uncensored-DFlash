@@ -31,7 +31,16 @@ Published tags:
 Published digest:
 
 ```text
-sha256:baddf917bbc8f547bd70bbd09d122157d44f545bb9597a54145aa6795704d552
+sha256:f6c3336689909934704bc5a292d688fef10f02ea96be67766bac0568b6d954f8
+```
+
+This digest includes corrected OCI package metadata pointing at the dedicated
+DDTree repository:
+
+```text
+org.opencontainers.image.source=https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DDTree
+org.opencontainers.image.url=https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DDTree
+org.opencontainers.image.documentation=https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DDTree/blob/main/README.md
 ```
 
 The DDTree package is intentionally separate from the stable DFlash package:
@@ -492,4 +501,3 @@ the exact places where true tree acceleration still needs engineering.
 Use it as a map, a testbed, and a starting point.
 
 Do **not** mistake it for the final production breakthrough yet.
-
