@@ -82,17 +82,27 @@ c=256 is a saturation test, not the recommended interactive setting. The baselin
 
 ### DDTree v5 Research Track
 
-DDTree is the next obvious performance target, but it must land inside vLLM without losing multimodal, reasoning, tool calling, NVFP4, or the OpenAI-compatible gateway surface. The current research image is published separately from the production DFlash image:
+DDTree is the next obvious performance target, but it must land inside vLLM without losing multimodal, reasoning, tool calling, NVFP4, or the OpenAI-compatible gateway surface. The current research image is published separately from the production DFlash image and is intentionally marked experimental:
 
 ```bash
 docker pull ghcr.io/aeon-7/vllm-aeon-ultimate-ddtree:qwen36-v5-m53-experimental
 ```
 
-Read the full DDTree card: [`docs/qwen36-ddtree-card.md`](docs/qwen36-ddtree-card.md).
+Read the full DDTree card and lab chronicle: [`docs/qwen36-ddtree-card.md`](docs/qwen36-ddtree-card.md).
 
 Current status in one line: **flat DFlash remains the production path; DDTree v5 is a published experimental container for tree-verifier, branch-state, and GDN replay development.** The image preserves the same NVFP4, DFlash, multimodal, reasoning, tool-calling, and OpenAI-compatible vLLM surface, but true non-flat branch commit is still research-only.
 
 The working implementation plan lives in [`docs/ddtree-vllm-integration-plan.md`](docs/ddtree-vllm-integration-plan.md). M1 scaffolding and the current experimental Docker context live in [`container/qwen36-v5-ddtree-experimental/`](container/qwen36-v5-ddtree-experimental/).
+
+The DDTree card documents:
+
+- the current container tags and digest,
+- what works today,
+- the M1 through M53 trial-and-error path,
+- the current M53 non-flat probe status,
+- known blockers around branch-state GDN replay, fused branch attention, and accepted-branch commit,
+- benchmark context and caveats,
+- where community help is most likely to move the project forward.
 
 Raw benchmark files:
 
@@ -100,7 +110,7 @@ Raw benchmark files:
 - [`bench/results/qwen36_v4_fi0611_noprefix_full_sweep_20260510T065838Z.json`](bench/results/qwen36_v4_fi0611_noprefix_full_sweep_20260510T065838Z.json)
 - [`bench/results/qwen36_v4_fi0611_noprefix_true_single_20260510T065020Z.json`](bench/results/qwen36_v4_fi0611_noprefix_true_single_20260510T065020Z.json)
 
-The v4 sweep used natural prompts across coding, math, reasoning, prose, everyday language, and extraction/JSON. It intentionally used a short-context benchmark profile to isolate decode/scheduler behavior: `--max-model-len 2048`, `--max-num-seqs 256`, prefix caching disabled, thinking enabled, 200 output tokens, minimum 16 samples per point, 20% trimmed median. Production/gateway profiles also keep prefix caching disabled so DFlash speculative verifier state is never mixed with reused KV or recurrent prefixes.
+The v4 sweep used natural prompts across coding, math, reasoning, prose, everyday language, and extraction/JSON. It intentionally used a short-context benchmark profile to isolate decode/scheduler behavior: `--max-model-len 2048`, `--max-num-seqs 256`, prefix caching disabled, thinking enabled, 200 output tokens, minimum 16 samples per point, 20% trimmed median. For production DFlash gateway use, prefix caching is workload-dependent: it is valuable when many agents share a stable prompt prefix, but DDTree research modes keep it off while branch-state correctness is under development.
 
 ---
 
@@ -574,7 +584,7 @@ Wielding an uncensored model is genuinely different from wielding an aligned one
 | `--max-num-batched-tokens` | `32768` | Prefill budget. This is the practical ceiling on Spark; above 32K, compile coverage and unified-memory pressure get worse. |
 | `--gpu-memory-utilization` | `0.75` gateway default, `0.85` solo LLM production | Use 0.75 when ASR, TTS, embeddings, ComfyUI, or other GPU services share the Spark. 0.85 is the long-context LLM-only cap. **Do not exceed 0.88 on DGX Spark** — unified memory thrashes above that. |
 | `--enable-chunked-prefill` | on | Required for long-context workloads to avoid prefill OOM. |
-| `--no-enable-prefix-caching` | required | DFlash manages speculative verifier state outside vLLM's prefix-cache reuse path. Leave prefix caching off for production, gateway, and benchmark profiles; enabling it can mix stale KV or GDN recurrent state into speculative windows. |
+| `--enable-prefix-caching` / `--no-enable-prefix-caching` | workload-dependent | For pure DFlash gateway serving, prefix caching can be a major TTFT win when many agents share the same stable system/persona/skills/tool prefix. In our repeated-prefix probe, a 37,837-token shared prefix dropped from ~26 s uncached TTFT to ~0.7 s cached follow-ups. For DDTree research modes, keep prefix caching off until branch-state replay and accepted-branch commit are quality-stable. |
 | `--load-format safetensors` | required | NVFP4 weights ship as safetensors. |
 | `--trust-remote-code` | required | Qwen 3.6 uses custom modeling code. |
 | `--enable-auto-tool-choice` | on | Enables OpenAI-compatible tool calling. |
