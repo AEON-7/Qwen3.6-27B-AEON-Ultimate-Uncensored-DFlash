@@ -1,10 +1,19 @@
-# Qwen3.6-27B AEON Ultimate DDTree Card
+# Qwen3.6-27B-AEON-Ultimate-Uncensored+DDTree
 
-> **Status: experimental research image.** This container publishes the current
-> Qwen3.6 DDTree-on-vLLM implementation so the community can inspect, reproduce,
-> and extend it. Use the production DFlash v4 container for reliable serving
-> today. Use this DDTree image when you are testing tree verification,
-> parent-state replay, or helping push hybrid-model speculative decoding forward.
+> **WARNING: experimental research container.**
+>
+> This image is published so the community can inspect, reproduce, benchmark,
+> and extend the current DDTree-on-vLLM work for Qwen3.6 on DGX Spark / GB10.
+> It is **not** the recommended production serving image yet. For reliable
+> serving today, use the stable DFlash path. Use this DDTree image when you are
+> testing tree verification, branch-state replay, Gated DeltaNet state handling,
+> fused branch attention, or helping push hybrid-model speculative decoding
+> forward.
+
+This card is intentionally candid. We have spent days building and testing this
+path, including many failed approaches. The goal is to give other researchers a
+real map of what has already been tried, what appears to work, what still breaks,
+and where the next breakthrough likely lives.
 
 ## Container
 
@@ -12,12 +21,12 @@
 docker pull ghcr.io/aeon-7/vllm-aeon-ultimate-ddtree:qwen36-v5-m53-experimental
 ```
 
-Tags:
+Published tags:
 
 | Tag | Purpose |
 |---|---|
-| `qwen36-v5-m53-experimental` | Immutable-ish milestone tag for the current DDTree research image. |
-| `experimental` | Moving experimental tag for the newest published DDTree build. |
+| `qwen36-v5-m53-experimental` | Milestone tag for the current public DDTree research image. |
+| `experimental` | Moving tag for the newest published DDTree build. |
 
 Published digest:
 
@@ -25,123 +34,106 @@ Published digest:
 sha256:baddf917bbc8f547bd70bbd09d122157d44f545bb9597a54145aa6795704d552
 ```
 
-The package is separate from the stable DFlash image on purpose:
+The DDTree package is intentionally separate from the stable DFlash package:
 
-| Stable serving | DDTree research |
+| Stable production path | DDTree research path |
 |---|---|
 | `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v4` | `ghcr.io/aeon-7/vllm-aeon-ultimate-ddtree:qwen36-v5-m53-experimental` |
 
-## What This Image Preserves
-
-The point of the AEON DDTree track is not to abandon the working vLLM stack.
-The image keeps the same user-facing capabilities as the Qwen3.6 DFlash runtime:
-
-- Qwen3.6-27B AEON Ultimate XS NVFP4 modelopt weights.
-- FlashInfer CUTLASS NVFP4 path for GB10 / sm_121a.
-- DFlash drafter integration with `num_speculative_tokens=15`.
-- OpenAI-compatible vLLM server.
-- Qwen3 reasoning parser for `<think>...</think>`.
-- Qwen3-Coder tool-call parser for structured `message.tool_calls[]`.
-- Multimodal request support through vLLM's Qwen3.6 model path.
-- `--no-enable-prefix-caching` enforced for DFlash/DDTree correctness.
-
-## Why DDTree Exists
-
-Flat speculative decoding asks the drafter for one linear chain:
+Both images are built from the same validated vLLM base commit:
 
 ```text
-target prefix -> draft token 1 -> draft token 2 -> draft token 3 -> ...
+vLLM 0.20.2rc1.dev166+gf6490a284
+base commit f6490a28413526adefae8dd7af32906d060e0436
 ```
 
-The target model then verifies that chain. If the first wrong token appears
-early, the rest of the verifier work is mostly wasted.
+So the DDTree image is not a random fork. It is the stable Qwen3.6 DFlash /
+Blackwell stack plus experimental DDTree overlays.
 
-DDTree changes the proposal shape. Instead of spending the whole budget on one
-chain, it builds a small tree of likely alternatives:
+## What This Preserves
+
+The DDTree effort is not a stripped-down text-only experiment. The design goal is
+to keep the same user-facing capabilities as the working Qwen3.6 DFlash runtime:
+
+- Qwen3.6-27B AEON Ultimate Multimodal NVFP4-MTP-XS body.
+- ModelOpt NVFP4 format with GB10 / sm_121a CUTLASS hardware path.
+- DFlash drafter integration using `z-lab/Qwen3.6-27B-DFlash`.
+- OpenAI-compatible vLLM `/v1/chat/completions` endpoint.
+- Qwen3 reasoning parser for `<think>...</think>`.
+- Qwen3-Coder tool-call parser for structured `message.tool_calls[]`.
+- Vision/multimodal request path through vLLM's Qwen3.6 model class.
+- JSON / structured-output compatibility inherited from vLLM.
+- CUDA graph capable DFlash serving path when running in pure `dflash` mode.
+
+## What DDTree Is Trying To Do
+
+Flat speculative decoding spends its verifier budget on one draft chain:
+
+```text
+prefix -> draft_1 -> draft_2 -> draft_3 -> ...
+```
+
+If the target model rejects an early draft token, most later verifier work is
+wasted.
+
+DDTree spends the same budget on a tree of alternatives:
 
 ```text
 prefix
-  -> best token
-       -> best continuation
-       -> alternate continuation
-  -> alternate token
-       -> best continuation
+  -> token A
+       -> token A1
+       -> token A2
+  -> token B
+       -> token B1
 ```
 
-In principle, this gives the verifier more useful paths per target forward
-pass. If the drafter's top-1 token misses but another high-probability branch
-matches the target, DDTree can still accept useful tokens instead of throwing
-away the whole window.
+In principle, this lets the verifier recover when the drafter's top-1 token is
+wrong but another high-probability branch is right. For a local long-context
+agent model, that is the prize: more accepted tokens per expensive target
+forward pass without losing reasoning, tool calling, vision, or long-context
+behavior.
 
-That is why DDTree is attractive for Qwen3.6 on DGX Spark:
+## Why Qwen3.6 Is A Hard Target
 
-- The target model is expensive enough that every verifier pass matters.
-- DFlash already produces rich draft logits we can mine for branches.
-- Blackwell/GB10 has enough memory bandwidth and FP4 throughput that a fused
-  tree verifier could become a real speed multiplier.
-- Long-thinking agent workloads often have local ambiguity where top-k branch
-  recovery should help acceptance.
+Qwen3.6 is not a plain transformer. It is a hybrid architecture with:
 
-## Why Qwen3.6 Is Hard
+- full-attention layers,
+- Gated DeltaNet / Mamba-style recurrent layers,
+- recurrent convolution state,
+- long-context position handling,
+- multimodal serving hooks,
+- reasoning and tool-call parsing on top.
 
-Qwen3.6 is not a plain full-attention transformer. It is a hybrid model with
-full-attention layers plus Gated DeltaNet / Mamba-style recurrent layers.
-
-For a normal chain, recurrent state is simple:
+For a flat chain, recurrent state is simple:
 
 ```text
 state[t + 1] = layer(token[t], state[t])
 ```
 
-For a tree, every branch must fork state from its own parent:
+For a tree, every branch must fork from its own parent:
 
 ```text
 state[node] = layer(token[node], state[parent(node)])
 ```
 
-That means true DDTree acceleration needs three pieces to be correct at the
-same time:
+That turns DDTree into a three-surface problem:
 
-1. **Tree attention**: every verifier row may attend only to the prefix plus
-   its ancestors, not to sibling branches.
-2. **Branch-local recurrent state**: GDN/conv state must be loaded from the
-   node's parent and written into a branch scratch slot.
-3. **Commit replay**: after sampling, only the accepted branch is copied back
-   into the model's normal contiguous KV/recurrent state.
+1. **Tree attention**: each verifier row may attend to the prefix plus its own
+   ancestors, not sibling branches.
+2. **Branch-local recurrent state**: GDN and conv state must be read from the
+   parent branch and written into scratch state for the child branch.
+3. **Accepted-branch commit**: after sampling, only the accepted path may be
+   committed back into vLLM's normal contiguous KV and recurrent state.
 
-The current image contains prototypes and guarded implementations for all
-three surfaces. The unresolved work is making the non-flat branch commit path
-quality-equivalent and fast enough for production.
+If any of those three is wrong, the benchmark can look alive while quality
+quietly collapses.
 
-## Implementation Breakdown
+## How To Run It
 
-Current milestone: **M53 temp non-flat GDN**, published as
-`qwen36-v5-m53-experimental`.
+### Safe Research Smoke Mode
 
-The image includes:
-
-| Area | What is implemented |
-|---|---|
-| vLLM method | `method="dflash_ddtree"` is accepted by speculative config. |
-| DFlash payload | DFlash top-k logits are converted into DDTree parent metadata. |
-| Scheduler bridge | Tree payloads move through vLLM beside the legacy flat draft-token path. |
-| Runtime sampler | Target logits can be interpreted as root+tree rows and sampled as an accepted branch plus bonus token. |
-| Attention verifier | Ancestor-mask experiments exist for FlexAttention and FlashAttention/Triton branch correction. |
-| GDN replay | Slow reference replay plus Triton parent-state reload experiments exist. |
-| State compaction | Accepted flat-prefix rows can be compacted safely; non-flat commit is guarded as research-only. |
-| DFlash context repair | Empty-context, target-position, query-padding, and drafter-context compaction fixes are included through M52/M53. |
-| Safety defaults | Prefix caching is off; unsafe full-branch commit requires explicit research env vars. |
-
-## Current Operating Modes
-
-| Mode | Use it for | Status |
-|---|---|---|
-| `dflash` | Normal DFlash serving from the same image. | Stable path inherited from v4. |
-| `ddtree` | Safe DDTree method surface and flat-prefix validation. | Coherent, research/validation only. |
-| `ddtree-full` | Non-flat branch commit, recurrent compaction, Triton GDN replay. | Research only; quality not production-safe yet. |
-| `qwen25-m2` | Small full-attention DDTree oracle target. | Useful for verifier logic without hybrid GDN complexity. |
-
-## Quick Start
+This is the default DDTree research entrypoint. It uses conservative limits and
+guards unsafe full-branch commit paths.
 
 ```bash
 docker run --gpus all --ipc host --network host --rm \
@@ -151,41 +143,199 @@ docker run --gpus all --ipc host --network host --rm \
   ddtree
 ```
 
-For manual vLLM launches, keep this invariant:
+### Pure DFlash Mode From The Same Image
+
+The same image can run the stable DFlash method surface:
 
 ```bash
---no-enable-prefix-caching
+docker run --gpus all --ipc host --network host --rm \
+  -e PROFILE=gateway \
+  -e SPEC_METHOD=dflash \
+  -e ENABLE_PREFIX_CACHING=1 \
+  -v /path/to/aeon-xs:/models/aeon-xs:ro \
+  -v /path/to/dflash-drafter:/models/dflash-drafter:ro \
+  ghcr.io/aeon-7/vllm-aeon-ultimate-ddtree:qwen36-v5-m53-experimental \
+  dflash
 ```
 
-Prefix caching conflicts with DFlash/DDTree verifier ownership of KV and GDN
-state. The packaged launchers now force it off even if
-`ENABLE_PREFIX_CACHING=1` is accidentally set.
+Pure DFlash mode is expected to behave like the stable DFlash lineage, but the
+production-recommended image remains `qwen36-v4` until this exact path has been
+A/B validated.
 
-## Research Environment Knobs
+### Unsafe Full-Branch Research Mode
 
-These are for isolated experiments, not default serving:
+This exists for kernel and commit-path developers. It is **not** production safe:
 
-| Env var | Meaning |
+```bash
+docker run --gpus all --ipc host --network host --rm \
+  -v /path/to/aeon-xs:/models/aeon-xs:ro \
+  -v /path/to/dflash-drafter:/models/dflash-drafter:ro \
+  ghcr.io/aeon-7/vllm-aeon-ultimate-ddtree:qwen36-v5-m53-experimental \
+  ddtree-full
+```
+
+## Prefix Cache Caveat
+
+For **DDTree research modes**, keep prefix caching off. DDTree verifier work
+owns temporary KV and recurrent state, and prefix reuse can hide state-alignment
+bugs while the branch commit path is still experimental.
+
+For **pure DFlash production serving**, prefix caching can be valuable. In an
+OpenClaw-style repeated-agent-prefix test, a shared 37,837-token system prompt
+dropped from about 26 seconds uncached TTFT to about 0.7 seconds on cached
+follow-up requests. That is a real gateway win, but it is separate from DDTree
+correctness.
+
+Practical rule:
+
+| Mode | Prefix cache |
 |---|---|
-| `DDTREE_ROOT_LEAF_ONLY=0` | Enables heap-shaped non-flat DDTree construction. |
-| `DDTREE_CHAIN_SEED_LIMIT=4` | Builds a short chain before adding branch alternatives. |
-| `DDTREE_TOP_K=4` | Top-k width used when expanding tree candidates. |
-| `DDTREE_BUDGET=8` | Number of draft nodes in the tree verifier window. |
-| `DDTREE_TRITON_TREE_GDN=1` | Uses the Triton/FLA GDN parent replay path. |
-| `DDTREE_BRANCH_ONLY_ATTN=1` | Applies branch-row attention correction only where needed. |
-| `DDTREE_FULL_BRANCH_COMMIT=1` | Research-only branch commit path; not production safe. |
-| `DDTREE_UNSAFE_FULL_BRANCH_RESEARCH=1` | Required guard for unsafe full-branch experiments. |
+| `dflash` production/gateway | Worth testing, often useful for repeated agent prefixes. |
+| `ddtree` smoke/research | Off by default. |
+| `ddtree-full` branch commit research | Off unless you are explicitly testing prefix-cache interaction. |
 
-## Benchmarks
+## Current Operating Modes
 
-The benchmark numbers below are included to make the status clear, not to claim
-DDTree is already faster than v4. The production speed target remains the v4
-DFlash image until non-flat branch commit is quality-equivalent.
+| Entry point | Purpose | Status |
+|---|---|---|
+| `dflash` | Stable DFlash serving surface from this image. | Should be close to v4; still validate before replacing v4. |
+| `ddtree` | Guarded DDTree research mode with safe defaults. | Useful for payload, sampler, and flat-prefix validation. |
+| `ddtree-full` | Full non-flat branch commit experiments. | Research only; quality not production safe. |
+| `qwen25-m2` | Small full-attention target for DDTree correctness work. | Recommended proving ground before Qwen3.6 hybrid integration. |
+| `bench` | Natural-prompt benchmark harness. | Used for c=1..256 category sweeps. |
+| `ddtree-*test` | Unit/smoke tests for tree metadata, sampler, payload, and GDN reference code. | Useful for patch validation. |
 
-### Production Reference: v4 DFlash
+## Chronicle Of The DDTree Work So Far
 
-Natural-prompt single stream, thinking enabled, prefix caching disabled for
-DFlash correctness:
+This section compresses the trial-and-error path into what future contributors
+actually need to know.
+
+### Phase 1: M1 to M3, vLLM Method Bridge
+
+What worked:
+
+- Added `method="dflash_ddtree"` as a vLLM speculative method surface.
+- Preserved the existing DFlash path while plumbing tree metadata beside it.
+- Proved the packaging path could boot, serve, and benchmark without breaking
+  normal DFlash behavior.
+
+What it taught us:
+
+- The container and launch surface are viable.
+- A flat-safe bridge can benchmark well, but that is not yet true DDTree.
+
+### Phase 2: M4, Payload Generation
+
+What worked:
+
+- Converted DFlash top-k logits into DDTree parent metadata.
+- Built root/child payloads and compact verifier row descriptions.
+- Added tests around tree node ordering, parent IDs, and compact logits indices.
+
+What failed or got complicated:
+
+- Naive root-wide top-k alternatives were toxic for Qwen3.6. DFlash depth logits
+  are useful for flat continuation, but not automatically good branch-conditioned
+  root alternatives.
+
+What it taught us:
+
+- DDTree needs branch-conditioned proposal logic, not just "take the top-k at
+  each flat depth and call it a tree."
+
+### Phase 3: M5 to M6, GDN State And Tree Attention
+
+What worked:
+
+- Built a slow reference GDN replay path.
+- Added parent metadata into Qwen3.6 GDN-layer execution.
+- Tested FlexAttention ancestor masks and FlashAttention/Triton branch-correction
+  ideas.
+
+What failed or got complicated:
+
+- Slow Python GDN replay was not a clean quality oracle. It could degrade even
+  flat-chain probes.
+- Dynamic tree masks and non-contiguous hybrid KV layouts are easy to make
+  correct-looking but hard to make fast and graph-safe.
+
+What it taught us:
+
+- The core blocker is not just "make an attention mask." The recurrent branch
+  state must be first-class.
+
+### Phase 4: M7 to M8, Accepted Branch Compaction
+
+What worked:
+
+- Added accepted-branch KV/state compaction experiments.
+- Added safeguards so flat-prefix rows could be compacted without corrupting the
+  base path.
+- Added drafter-context compaction and empty-context fixes.
+
+What failed or got complicated:
+
+- Full non-flat commits could produce plausible token streams but degrade quality.
+- Bonus-token handling is subtle: the accepted draft path and target bonus row
+  must not be fed back into the drafter as if they were the same thing.
+
+What it taught us:
+
+- "Accepted tokens" and "emitted tokens" need explicit, separate plumbing.
+- The drafter context has to be rebuilt from accepted draft states, not guessed
+  from target verifier rows.
+
+### Phase 5: M8 to M10, Fused Paths And CUDA-Graph Safety
+
+What worked:
+
+- Added opt-in Triton GDN replay experiments.
+- Added branch-only attention correction paths.
+- Added CUDA-int32 parent metadata normalization and graph-safety probes.
+- Explored paged-KV verifier support and FlashAttention branch mask correction.
+
+What failed or got complicated:
+
+- Graph-safe tree attention is not the same as fast tree attention.
+- The branch-row path can be technically wired but still lose the performance
+  benefit if it falls back to dynamic or eager work too often.
+
+What it taught us:
+
+- The final production path likely needs fused branch attention plus fused
+  branch-state GDN replay, not a stack of Python-side corrections.
+
+### Phase 6: M10 to M11/M53, Non-Flat Commit And DFlash Context Repair
+
+What worked:
+
+- Added accepted-count plumbing.
+- Restored accepted+bonus scheduler contracts.
+- Added branch GDN state mirroring and recurrent-state cursor synchronization.
+- Added DFlash hidden-state compaction and one-step drafter suppression tests.
+- Fixed several concrete crash/shape issues:
+  - empty context KV handling,
+  - zero-context position handling,
+  - query input padding,
+  - current vLLM sampler output signature compatibility.
+
+What remains unresolved:
+
+- Non-flat branch commit is not yet quality-equivalent.
+- Branch-state replay still needs scratch buffers that never mutate committed
+  recurrent state before acceptance.
+- We need a clean full-attention proving target before trusting Qwen3.6 hybrid
+  results.
+
+## Current Benchmark State
+
+The numbers below are included for transparency. They should not be read as
+"DDTree is production faster now." The current production winner remains flat
+DFlash.
+
+### Stable Production Reference: v4 DFlash
+
+Natural prompts, thinking enabled, Qwen3.6 AEON Ultimate XS, DFlash k=15.
 
 | Category | Decode tok/s | TTFT p50 | TPOT p50 |
 |---|---:|---:|---:|
@@ -197,12 +347,28 @@ DFlash correctness:
 | Extraction / JSON | 45.36 | 219 ms | 21.3 ms |
 | **Average** | **36.91** | **223 ms** | **27.0 ms** |
 
+### DFlash With Prefix Cache, Agent-Style Repeated Prefix
+
+This is not DDTree, but it matters for real OpenClaw/gateway serving. The test
+used a stable 37,837-token shared system prefix followed by short per-agent
+tasks.
+
+| Request | TTFT |
+|---:|---:|
+| First uncached request | 26,045 ms |
+| Cached follow-up 1 | 682 ms |
+| Cached follow-up 2 | 694 ms |
+| Cached follow-up 3 | 672 ms |
+| Cached follow-up 4 | 669 ms |
+| Cached follow-up 5 | 683 ms |
+
+Conclusion: prefix caching is a production DFlash optimization for repeated
+agent prefixes, but it should not be used to hide DDTree state correctness bugs.
+
 ### DDTree M1 Bridge Benchmark
 
-M1 validates the vLLM `dflash_ddtree` method surface and bridge while retaining
-flat-safe behavior. It is useful as a regression baseline because it shows the
-DDTree packaging path can preserve DFlash-like throughput before enabling
-unsafe non-flat branch commit.
+M1 validates the vLLM method bridge and flat-safe DDTree packaging. It is not
+true non-flat branch acceleration.
 
 Single stream, thinking disabled in this particular run:
 
@@ -227,50 +393,103 @@ Full c=1..256 sweep, thinking enabled:
 | Natural language | 33.60 | 177.55 @ c=256 | 177.55 | 134.5 s |
 | Extraction / JSON | 54.77 | 306.75 @ c=128 | 304.64 | 77.0 s |
 
-### M53 Non-Flat Research Status
+### Current M53 Non-Flat Probe Status
 
-M53 is the currently published research image. It includes the latest fixes for
-DFlash context compaction, empty context KV handling, query input padding, and
-temporary non-flat GDN experiments.
+The current published research image can build and pass DDTree payloads through
+vLLM. In a debug probe profile, observed acceptance looked like this:
 
-Observed status:
+| Metric | Observed range |
+|---|---:|
+| Mean accepted length | about 2.7 tokens |
+| Draft acceptance rate | about 21% |
+| Position 0 acceptance | about 50-67% |
+| Position 1 acceptance | about 44-50% |
+| Position 2 acceptance | about 33% |
+| Position 3 acceptance | about 28-33% |
+| Later branch positions | mostly 0% |
 
-- Flat-chain / flat-prefix behavior remains coherent.
-- Root-wide alternatives are toxic for Qwen3.6 because native DFlash depth
-  logits are not branch-conditioned root alternatives.
-- Heap-shaped non-flat payloads can be built and carried through vLLM.
-- Non-flat branch rows still degrade quality when branch-state replay and
-  commit are enabled.
-- Slow Python GDN replay is not a reliable quality oracle; it can degrade even
-  on flat-chain tests.
-- Fused/Triton GDN replay is structurally present, but still needs scratch
-  branch-state buffers and an explicit commit path before it can be called
-  production acceleration.
+That is enough to prove that the plumbing is not dead. It is not enough to call
+DDTree operational.
 
-Practical conclusion:
+## Current Outstanding Blockers
 
-```text
-Use v4 DFlash for serving.
-Use v5 DDTree for research, validation, and kernel/commit-path development.
-```
+### 1. Scratch Branch-State Buffers
 
-## What Needs To Land Next
+GDN and conv layers need per-branch scratch state. A verifier row should load
+state from its parent, write state to its own branch slot, and leave the
+committed recurrent cursor untouched until a branch is accepted.
 
-True full DDTree acceleration for Qwen3.6 needs:
+### 2. Explicit Accepted-Branch Commit
 
-1. Scratch branch-state buffers for GDN/conv layers.
-2. Fused branch attention that handles ancestor-only masks without falling back
-   to slow dynamic paths.
-3. Branch-state GDN replay that never mutates the committed recurrent cursor
-   until a branch is accepted.
-4. Accepted-branch commit that writes only the sampled branch back to the
-   normal vLLM KV/recurrent state.
-5. DFlash drafter-context compaction that keeps accepted draft hidden states
-   aligned without accidentally feeding the target bonus row back to the
-   drafter.
-6. Full capability regression: text, vision, reasoning, tool calls, structured
-   output, long context, and guided JSON.
+The runtime needs first-class accepted node IDs, parent IDs, accepted count, and
+bonus-token ownership. Only the accepted branch should be copied into normal
+vLLM KV/recurrent state.
 
-When those land, DDTree should move from a research container to a production
-`qwen36-v5` release candidate.
+### 3. Fused Branch Attention
+
+Ancestor-only attention masks need a fast fused implementation. Dynamic fallback
+paths can be useful for correctness, but they erase much of the speed benefit.
+
+### 4. DFlash Drafter Context Compaction
+
+The drafter context must be compacted from accepted draft hidden states. Rejected
+branches and target bonus rows must not leak into the drafter's next context.
+
+### 5. Position And RoPE Correctness
+
+Verifier rows need logical sequence positions based on branch depth and accepted
+history, not just compact row order.
+
+### 6. Small Full-Attention Proving Ground
+
+Before declaring Qwen3.6 hybrid DDTree solved, the non-flat algorithm should
+produce clean outputs on a smaller full-attention model such as
+`Qwen/Qwen2.5-0.5B-Instruct`. That separates tree-verifier bugs from hybrid GDN
+bugs.
+
+## Important Caveats
+
+- **Experimental means experimental.** This image is for research and
+  reproducibility, not production SLAs.
+- **DDTree mode is not faster yet.** The published image preserves the work so
+  others can help push it over the line.
+- **The v5 image shares the same base vLLM commit as v4.** Most v5 changes are
+  DDTree overlays, not generic DFlash speedups.
+- **Root-wide alternatives were not enough.** Naive top-k branch expansion can
+  hurt quality on Qwen3.6.
+- **Greedy-only testing can mislead.** Some anomalies changed when native
+  sampling was restored, so both deterministic and normal sampling tests matter.
+- **Prefix cache is mode-dependent.** Useful for repeated DFlash agent prefixes,
+  risky for DDTree correctness work.
+- **Thermals matter on DGX Spark.** Long c=256 sweeps can heat-soak the box and
+  shift results. Cooldown cycles are recommended before final benchmark runs.
+- **c=256 is a saturation map, not a suggested user setting.** Most real agent
+  gateways should care more about c=1, c=4, c=8, c=16, and c=32 behavior.
+
+## What Help Would Be Most Useful
+
+If you want to help unlock production DDTree for Qwen3.6, the highest-value
+contributions are:
+
+1. A clean small-model DDTree correctness harness with token-by-token parity
+   against baseline decoding.
+2. A fused ancestor-mask branch attention kernel that works with vLLM's paged KV
+   layout.
+3. Scratch-buffer GDN/conv branch-state replay that never mutates committed
+   recurrent state before acceptance.
+4. A robust accepted-branch commit contract for vLLM speculative decoding.
+5. DFlash branch-conditioned proposal logic, rather than naive root-wide top-k
+   expansion.
+6. Quality canaries covering text, long-form reasoning, tool calls, JSON,
+   vision, and long context.
+
+## Bottom Line
+
+The fruit of this work so far is a public, reproducible DDTree research
+container that preserves the full Qwen3.6 AEON Ultimate serving stack and exposes
+the exact places where true tree acceleration still needs engineering.
+
+Use it as a map, a testbed, and a starting point.
+
+Do **not** mistake it for the final production breakthrough yet.
 
