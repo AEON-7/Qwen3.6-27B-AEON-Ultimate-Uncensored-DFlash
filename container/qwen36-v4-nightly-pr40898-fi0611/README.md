@@ -22,9 +22,9 @@ benchmarks without rewriting the command line.
 
 | Profile | Max context | Max seqs | GPU util | Prefix cache | Use case |
 |---|---:|---:|---:|---|---|
-| `production` *(default)* | 200000 | 16 | 0.85 | on | Documented DGX Spark long-context recipe. Preserves prefix caching and Mamba align cache for multi-turn agents. |
-| `gateway` | 256000 | 64 | 0.75 | on | Local OpenClaw-style deployment where ASR/TTS or other GPU services need headroom. |
-| `benchmark` | 2048 | 256 | 0.85 | off | Short-prompt throughput sweep. Disables prefix caching because unique benchmark prompts do not reuse prefixes and Mamba align cache otherwise caps concurrency. Do not use as the default chat profile. |
+| `production` *(default)* | 200000 | 16 | 0.85 | off | Documented DGX Spark long-context recipe with DFlash-compatible KV ownership. |
+| `gateway` | 256000 | 64 | 0.75 | off | Local OpenClaw-style deployment where ASR/TTS or other GPU services need headroom. |
+| `benchmark` | 2048 | 256 | 0.85 | off | Short-prompt throughput sweep. Keeps prefix caching off so DFlash verifier state is never mixed with reused KV prefixes. |
 
 All profiles keep the production-critical knobs from the Spark compose recipe:
 

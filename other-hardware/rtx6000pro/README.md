@@ -68,7 +68,7 @@ OpenAI-compatible endpoint at `http://localhost:8000/v1`.
 | `VLLM_NVFP4_GEMM_BACKEND` | (default — patched CUTLASS via image) | **`flashinfer-cutlass`** (explicit) | The sm_120 default should pick this anyway, but setting it explicitly removes any ambiguity if vLLM's heuristics change between releases. |
 | `ENABLE_NVFP4_SM100`, `NVIDIA_FORWARD_COMPAT`, `NVIDIA_DISABLE_REQUIRE`, `VLLM_TEST_FORCE_FP8_MARLIN`, `VLLM_ALLOW_LONG_MAX_MODEL_LEN` | required (DGX Spark / GB10 specifics) | **(none of these set)** | All work around DGX Spark / sm_121a-specific quirks (driver mismatch, SM121 build guards, baked-in test defaults). None apply on sm_120. |
 
-What stays the same: the DFlash drafter (`z-lab/Qwen3.6-27B-DFlash`), `--speculative-config` with `num_speculative_tokens=15`, `--max-num-batched-tokens 32768` (the inductor compile-range ceiling — arch-independent), `--enable-prefix-caching` (which auto-enables `mamba_cache_mode=align` for the hybrid GDN layers), tool/reasoning parsers, multimodal hooks, and `--attention-backend flash_attn`.
+What stays the same: the DFlash drafter (`z-lab/Qwen3.6-27B-DFlash`), `--speculative-config` with `num_speculative_tokens=15`, `--max-num-batched-tokens 32768` (the inductor compile-range ceiling — arch-independent), `--no-enable-prefix-caching` (required so DFlash verifier state is not mixed with reused KV/GDN prefixes), tool/reasoning parsers, multimodal hooks, and `--attention-backend flash_attn`.
 
 ---
 
@@ -105,9 +105,9 @@ Stack trace shows `vllm.utils.flashinfer.flashinfer_mm_fp4 → flashinfer.gemm.m
 2. **`--gpu-memory-utilization 0.92`** — fully clean autotune, no fallback warnings, slightly smaller KV cache.
 3. **`--gpu-memory-utilization 0.95 --no-enable-flashinfer-autotune`** — maximum KV cache but loses autotuned kernel selection (typically 5-10 % perf cost).
 
-### Prefix cache hit rate is empirically inconsistent on early turns
+### Prefix caching stays off for DFlash
 
-Validation observed:
+Earlier validation measured vLLM prefix-cache behavior for multi-turn requests:
 
 - **Turn 1 of multi-turn**: 0 cached tokens (expected — first request)
 - **Turn 2**: 0 cached tokens (**unexpected** — same system prompt + accumulating history should match)
@@ -120,11 +120,11 @@ A/B benchmarks (with vs without prefix caching) show:
 - **For multi-turn before hits land**: prefix caching adds slight overhead — without it, multi-turn 1 ran 93.8 tok/s; with it, 65.7 tok/s.
 - **Once hits land (turn 3+)**: prefix caching wins decisively on TTFT.
 
-**Recommendation**: keep `--enable-prefix-caching` on for any agent or multi-turn workload; the turn 3+ benefit dominates over a long conversation. For pure single-turn API workloads, the small overhead from align-mode bookkeeping is real but minor.
+**Current recommendation**: keep `--no-enable-prefix-caching` for DFlash and DDTree profiles. The old prefix-cache measurements are useful history, but speculative verifier windows and rejected draft rows make prefix reuse risky for this stack.
 
 ### `--mamba-cache-mode none` is overridden when prefix caching is on
 
-vLLM auto-forces `align` for this model whenever `--enable-prefix-caching` is enabled. Both omitting `--mamba-cache-mode` and explicitly setting it to `none` resulted in the same auto-promotion to `align`. The boot log will print:
+vLLM auto-forces `align` for this model whenever `--enable-prefix-caching` is enabled. Both omitting `--mamba-cache-mode` and explicitly setting it to `none` resulted in the same auto-promotion. This is why the DFlash launch recipe disables prefix caching entirely. If prefix caching is accidentally enabled, the boot log will print:
 
 ```
 Mamba cache mode is set to 'align' for Qwen3_5ForConditionalGeneration by default when prefix caching is enabled

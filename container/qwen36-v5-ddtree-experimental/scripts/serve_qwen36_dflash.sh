@@ -41,6 +41,11 @@ MAX_NUM_SEQS="${MAX_NUM_SEQS:-$DEFAULT_MAX_NUM_SEQS}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-$DEFAULT_GPU_MEMORY_UTILIZATION}"
 ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-$DEFAULT_ENABLE_PREFIX_CACHING}"
 NUM_SPECULATIVE_TOKENS="${NUM_SPECULATIVE_TOKENS:-15}"
+SPEC_METHOD="${SPEC_METHOD:-dflash}"
+DDTREE_BUDGET="${DDTREE_BUDGET:-22}"
+DDTREE_TOP_K="${DDTREE_TOP_K:-8}"
+DDTREE_TEMPERATURE="${DDTREE_TEMPERATURE:-1.0}"
+DDTREE_CHAIN_SEED="${DDTREE_CHAIN_SEED:-true}"
 ATTENTION_BACKEND="${ATTENTION_BACKEND:-flash_attn}"
 GENERATION_CONFIG="${GENERATION_CONFIG:-vllm}"
 MM_SHM_CACHE_MAX_OBJECT_SIZE_MB="${MM_SHM_CACHE_MAX_OBJECT_SIZE_MB:-256}"
@@ -62,12 +67,37 @@ export TORCHINDUCTOR_MAX_AUTOTUNE="${TORCHINDUCTOR_MAX_AUTOTUNE:-0}"
 export TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE="${TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE:-0}"
 export TORCHINDUCTOR_MAX_AUTOTUNE_GEMM="${TORCHINDUCTOR_MAX_AUTOTUNE_GEMM:-0}"
 
-SPEC_CONFIG=$(printf '{"method":"dflash","model":"%s","num_speculative_tokens":%s,"attention_backend":"FLASH_ATTN"}' \
-  "$DFLASH_DIR" "$NUM_SPECULATIVE_TOKENS")
+case "${DDTREE_CHAIN_SEED,,}" in
+  1|true|yes|on)
+    DDTREE_CHAIN_SEED_JSON=true
+    ;;
+  0|false|no|off)
+    DDTREE_CHAIN_SEED_JSON=false
+    ;;
+  *)
+    echo "Invalid DDTREE_CHAIN_SEED=$DDTREE_CHAIN_SEED" >&2
+    exit 2
+    ;;
+esac
+
+case "$SPEC_METHOD" in
+  dflash)
+    SPEC_CONFIG=$(printf '{"method":"dflash","model":"%s","num_speculative_tokens":%s,"attention_backend":"FLASH_ATTN"}' \
+      "$DFLASH_DIR" "$NUM_SPECULATIVE_TOKENS")
+    ;;
+  dflash_ddtree)
+    SPEC_CONFIG=$(printf '{"method":"dflash_ddtree","model":"%s","num_speculative_tokens":%s,"attention_backend":"FLASH_ATTN","ddtree_budget":%s,"ddtree_top_k":%s,"ddtree_temperature":%s,"ddtree_chain_seed":%s}' \
+      "$DFLASH_DIR" "$NUM_SPECULATIVE_TOKENS" "$DDTREE_BUDGET" "$DDTREE_TOP_K" "$DDTREE_TEMPERATURE" "$DDTREE_CHAIN_SEED_JSON")
+    ;;
+  *)
+    echo "Invalid SPEC_METHOD=$SPEC_METHOD (expected dflash or dflash_ddtree)" >&2
+    exit 2
+    ;;
+esac
 
 case "${ENABLE_PREFIX_CACHING,,}" in
   1|true|yes|on)
-    echo "ENABLE_PREFIX_CACHING=$ENABLE_PREFIX_CACHING requested, but DFlash requires prefix caching off; using --no-enable-prefix-caching." >&2
+    echo "ENABLE_PREFIX_CACHING=$ENABLE_PREFIX_CACHING requested, but DFlash/DDTree requires prefix caching off; using --no-enable-prefix-caching." >&2
     ;;
   0|false|no|off)
     ;;

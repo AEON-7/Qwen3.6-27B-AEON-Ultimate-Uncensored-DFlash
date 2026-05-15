@@ -40,6 +40,8 @@ If your task is on RTX PRO 6000, **do not apply this file's flags wholesale** �
 
 The complete production configs are in [`docker-compose.yml`](docker-compose.yml) (regular `-NVFP4` body, simpler legacy stack) and [`docker-compose.spark-xs.yml`](docker-compose.spark-xs.yml) (XS body, current winning recipe). The Spark XS compose pins the `qwen36-v4` image. The compose files are **the source of truth**. Don't deviate without reading the rationale below.
 
+**DDTree note:** `container/qwen36-v5-ddtree-experimental/` is an experimental build track. Its M1 image adds `method="dflash_ddtree"` as a vLLM method, but M1 intentionally falls back to the proven flat DFlash verifier. Do not replace production v4 with v5 until tree verification and Qwen3.6 tree-aware GDN state commit pass the capability regression suite in [`docs/ddtree-vllm-integration-plan.md`](docs/ddtree-vllm-integration-plan.md).
+
 ---
 
 ## DO NOT UNDO — common stale-documentation traps
@@ -180,7 +182,7 @@ These all appear in [`docker-compose.yml`](docker-compose.yml). Each line below 
 | `--max-num-batched-tokens` | `32768` | Prefill budget and practical Spark ceiling for this stack. | "Stock vLLM uses 65536" — OOMs or falls off the optimized path on GB10 unified memory under concurrent long-context |
 | `--gpu-memory-utilization` | `0.75` gateway, `0.85` LLM-only production | Unified memory cap. See "Don't undo #4". | "0.95 is the recommended default" — for dedicated VRAM only |
 | `--enable-chunked-prefill` | flag | Required for long-context workloads to avoid prefill OOM. | None |
-| `--enable-prefix-caching` | flag | Required for real agent workloads. It enables normal attention prefix caching plus Mamba/GDN align-cache behavior for shared-prefix multi-turn sessions. | "Disable prefix caching because benchmarks did" — wrong; the benchmark profile disables it only to isolate unique-prompt decode behavior |
+| `--no-enable-prefix-caching` | flag | Required for DFlash/DDTree correctness. Keep vLLM prefix caching off so speculative verifier KV and GDN recurrent state are not reused across incompatible branches. | "Enable prefix caching for multi-turn agents" — risky with DFlash/DDTree; use gateway memory and retrieval strategy instead |
 | `--load-format safetensors` | required | NVFP4 weights ship as safetensors. | None |
 | `--trust-remote-code` | required | Qwen 3.6 uses custom modeling code. | None |
 | `--enable-auto-tool-choice` | flag | Enables OpenAI-compatible tool calling. | None |
@@ -202,7 +204,7 @@ The current production image is `vllm-aeon-ultimate-dflash:qwen36-v4`, built **2
 | PR | Title | What it fixes |
 |---|---|---|
 | #40092 | SWA backend assert fix | Sliding-window attention assertion that fired on Qwen3.6's specific layer config |
-| #40454 | Default-align mamba cache w/ spec-decode | Hybrid GDN + DFlash spec-decode cache alignment bug. **Also enables `mamba_cache_mode=align`** — when `--enable-prefix-caching` is on (it is, in this image), this caches GDN/SSM hidden state across requests for hybrid models that report `supports_mamba_prefix_caching=True` (Qwen3.6-27B does). Multi-turn agent workloads with shared prefix tokens benefit dramatically: turns 2+ skip re-rolling the 48 GDN layers' recurrent state. **Currently flagged "experimental" by vLLM** — a warning prints at boot ("Prefix caching in Mamba cache 'align' mode is currently enabled. Its support for Mamba layers is experimental.") This is expected; the feature is doing real work under the experimental label. |
+| #40454 | Default-align mamba cache w/ spec-decode | Hybrid GDN + spec-decode cache alignment bug. This patch remains useful context, but AEON DFlash/DDTree launch profiles now force `--no-enable-prefix-caching` because prefix-cache reuse can conflict with speculative verifier state. |
 | #40191 | `ENABLE_NVFP4_SM100=0` guard | Allows sm_121a-only builds to import without SM100-only `mxfp4_experts_quant` symbols |
 | #40662 | Unified spec-decode acceptance metrics | DFlash + DynamicProposer + EAGLE all report through the same `/metrics` schema |
 | #38479 | TurboQuant K8V4 backend | KV-cache compression backend (currently guarded out for hybrid models — see #39931 for the unblock) |
@@ -414,17 +416,17 @@ msg = response["choices"][0]["message"]
 full_output = (msg.get("reasoning") or "") + (msg.get("content") or "")
 ```
 
-### `mamba_cache_mode=align` is auto-coupled to `--enable-prefix-caching`
+### Prefix caching stays off with DFlash/DDTree
 
-vLLM auto-promotes `mamba_cache_mode` to `align` for `Qwen3_5ForConditionalGeneration` whenever `--enable-prefix-caching` is on (which is our default). **Setting `--mamba-cache-mode none` does NOT disable this** — it's overridden silently. The boot log line `Mamba cache mode is set to 'align' for Qwen3_5ForConditionalGeneration by default when prefix caching is enabled` is informational, not a warning.
+vLLM auto-promotes `mamba_cache_mode` to `align` for `Qwen3_5ForConditionalGeneration` whenever `--enable-prefix-caching` is on. Do not enable that path for the AEON DFlash or DDTree profiles. The prefix cache and Mamba/GDN align cache were designed for deterministic shared-prefix reuse, while DFlash/DDTree introduce verifier windows, rejected draft rows, and branch-local recurrent state.
 
-The only way to actually run without align is to drop `--enable-prefix-caching` entirely, which loses prefix caching too. In practice, leave it on — the multi-turn benefit is large.
+The launch scripts therefore force `--no-enable-prefix-caching`. If someone sets `ENABLE_PREFIX_CACHING=1`, the script should warn and still run with prefix caching disabled.
 
 ### Prefix cache hit rate is empirically inconsistent on early turns
 
 Validation on RTX PRO 6000 (community report) observed 0 % cache hit on turns 1 and 2 of a multi-turn agent workload, then 61.9 % hit on turn 3 — even with identical system prompts and accumulating shared context. An identical-prompt smoke test (two repeats of a 10K-token prompt) also reported 0 hits on the second request.
 
-This appears to be a real interaction between block-boundary alignment and how `mamba_cache_mode=align` lazily snapshots GDN state. **It's not a config bug.** Once cache hits land (typically turn 3+), the TTFT win is substantial and the feature pays off.
+This appears to be a real interaction between block-boundary alignment and how `mamba_cache_mode=align` lazily snapshots GDN state. Treat those old measurements as historical only; current DFlash/DDTree deployments leave prefix caching off for correctness.
 
 If you're running a benchmark that expects cache hits on turn 2, you may need to extend it to 3+ turns to see the expected behavior.
 
@@ -453,7 +455,7 @@ These are tempting but **either don't help or actively break things** for this s
 | EAGLE-2 / EAGLE-3 dynamic tree spec decode | Requires a different drafter (Eagle head, not DFlash). No public Qwen3.6-27B Eagle drafter exists. |
 | Medusa heads | No Qwen3.6-27B Medusa heads published. Static-tree only in vLLM, doesn't help our hybrid GDN layers. |
 | DDTree (dynamic-tree on top of DFlash) | Ongoing R&D — see [the GDN compatibility issue](#hybrid-attention--ddtree-status). Not in any public vLLM release. |
-| `--enable-prefix-caching=False` to "save memory" | Counterproductive — chat workloads benefit substantially from prefix caching. |
+| Enabling prefix caching with DFlash/DDTree | Can mix reused KV/GDN recurrent state with speculative verifier or branch state. Keep `--no-enable-prefix-caching`. |
 | Aggressive CUDA graphs (`--num-cudagraphs N`) | Already tuned in the image. Manual override likely regresses. |
 | Tensor parallelism (`--tensor-parallel-size 2+`) | DGX Spark is single-GPU. TP > 1 is meaningless. |
 | Pipeline parallelism | Same. |

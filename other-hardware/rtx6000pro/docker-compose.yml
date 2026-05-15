@@ -142,13 +142,9 @@ services:
 
       - --enable-chunked-prefill
 
-      # Prefix caching: enables both standard attention K/V caching AND
-      # mamba_cache_mode=align (auto-on for Qwen3_5ForConditionalGeneration).
-      # The mamba half is what makes multi-turn agent workloads fast — turns
-      # 2+ skip re-prefilling the 48 GDN layers when the prefix is shared.
-      # vLLM will print a warning calling this "experimental"; it's working
-      # correctly, that's just upstream tagging.
-      - --enable-prefix-caching
+      # Prefix caching stays disabled for DFlash/DDTree correctness.
+      # Reused prefixes can mix stale KV/GDN state into speculative windows.
+      - --no-enable-prefix-caching
 
       - --load-format
       - safetensors
