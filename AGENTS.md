@@ -233,7 +233,7 @@ A second-pass agent considering an upgrade should compare to the unified `aeon-v
 
 ### Failure mode: "Let me update vLLM to the latest version"
 
-**Symptom:** Agent sees vLLM v0.20.0 in the image and runs `pip install --upgrade vllm` to "fix things."
+**Symptom:** Agent assumes the image's vLLM is outdated (or reads a main-branch build string as a stale version pin) and runs `pip install --upgrade vllm` to "fix things."
 
 **What actually happens:** Overwrites the patched binaries with stock vLLM. Loss of: SM121 CUTLASS NVFP4 kernels, hybrid GDN spec-decode alignment, and the DFlash SWA / prefix-cache patches above.
 
@@ -309,7 +309,7 @@ If the body is the XS variant and you set `--quantization compressed-tensors`, y
 
 **What actually happens:** Each `curl` call pays the full HTTP setup cost; without streaming, total wall-time = TTFT + decode time on every request.
 
-**Fix:** Use `stream: true` with `stream_options: {include_usage: true}` and measure time-to-first-token vs subsequent inter-token times separately. The included `bench_aeon.py` (in the repo) does this correctly.
+**Fix:** Use `stream: true` with `stream_options: {include_usage: true}` and measure time-to-first-token vs subsequent inter-token times separately. The included [`bench/bench_aeon.py`](bench/bench_aeon.py) does this correctly.
 
 ---
 

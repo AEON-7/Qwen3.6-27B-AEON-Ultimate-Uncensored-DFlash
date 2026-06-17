@@ -6,7 +6,7 @@
 
 [![BF16](https://img.shields.io/badge/HuggingFace-BF16_(51_GB)-yellow?logo=huggingface)](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16)
 [![NVFP4](https://img.shields.io/badge/HuggingFace-NVFP4_(26_GB)-yellow?logo=huggingface)](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4)
-[![Container](https://img.shields.io/badge/ghcr.io-aeon--vllm--ultimate-blue?logo=docker)](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DFlash/pkgs/container/aeon-vllm-ultimate)
+[![Container](https://img.shields.io/badge/ghcr.io-aeon--vllm--ultimate-blue?logo=docker)](https://github.com/AEON-7/vllm-ultimate-dgx-spark/pkgs/container/aeon-vllm-ultimate)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green)](LICENSE)
 [![☕ Tips](https://img.shields.io/badge/%E2%98%95_Tips-Support_the_work-ff5e5b?style=flat)](https://github.com/AEON-7/AEON-7#-support-the-work)
 
@@ -29,11 +29,15 @@ The throughput table below was measured on the earlier `qwen36-v4` image with DF
 | Deployment | Container | DFlash | CUDA graphs | Tool calling | Avg c=1 decode |
 |---|---|---:|---:|---:|---:|
 | 🔴 **Raw baseline** | `vllm/vllm-openai:nightly` | off | off (`--enforce-eager`) | off | **10.49 tok/s** |
-| 🟢 **AEON DFlash** | `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` | **n=12** | **on** | **on** | **37.56 tok/s** |
+| 🟢 **AEON DFlash** | `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` | **n=12** | **on** | **on** | **37.56 tok/s** † |
+
+> † These single-stream tok/s (37.56 / 10.49) were measured on the earlier `qwen36-v4` image at DFlash **k=15**, not on `aeon-vllm-ultimate:latest` at n=12. The unified image's specific gain is **long-context draft acceptance (45% vs 19.7% at ~9k tokens)**, not these short-context tok/s — see [why long context](#why-the-spark-recipe-is-tuned-for-long-context).
 
 **Average single-stream decode improvement: +258%** over the raw stock eager baseline.
 
 ### Single-Stream Decode
+
+*All figures in this section and the concurrency tables below were measured on the earlier `qwen36-v4` image at DFlash k=15 (see the note above) — representative of the Spark DFlash path, not a re-run on `aeon-vllm-ultimate:latest` at n=12.*
 
 | Category | 🔴 Raw baseline | 🟢 AEON DFlash | Approx. speed increase | DFlash TTFT | DFlash TPOT |
 |---|---:|---:|---:|---:|---:|
@@ -511,7 +515,7 @@ Typical KL divergence vs the BF16 source for recipe-class NVFP4 quantization is 
 On Blackwell-class silicon, NVFP4 runs at **full FP4 tensor-core throughput** through native paths:
 
 - **B100 / B200**: `tcgen05` / UTCQMMA instructions — fastest NVFP4 hardware available.
-- **DGX Spark (GB10 / sm_121a)**: SM121-specific CUTLASS NVFP4 kernels (the [`aeon-vllm-ultimate`](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DFlash/pkgs/container/aeon-vllm-ultimate) container ships these patched in).
+- **DGX Spark (GB10 / sm_121a)**: SM121-specific CUTLASS NVFP4 kernels (the [`aeon-vllm-ultimate`](https://github.com/AEON-7/vllm-ultimate-dgx-spark/pkgs/container/aeon-vllm-ultimate) container ships these patched in).
 - **RTX PRO 6000 Blackwell (sm_120)**: standard CUTLASS NVFP4 path.
 
 The GPU does **not** dequantize back to BF16 internally on these paths. You get the speed of true 4-bit compute *and* the accuracy of 16-bit weights at the same time.
@@ -671,7 +675,7 @@ Apache 2.0, inherited from `Qwen/Qwen3.6-27B`.
 
 **Built over 72 hours · Hundreds of research agents · Lossless · Capability-enhanced**
 
-[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16) &nbsp;·&nbsp; [NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4) &nbsp;·&nbsp; [Container](https://github.com/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-DFlash/pkgs/container/aeon-vllm-ultimate)
+[BF16](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16) &nbsp;·&nbsp; [NVFP4](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-NVFP4) &nbsp;·&nbsp; [Container](https://github.com/AEON-7/vllm-ultimate-dgx-spark/pkgs/container/aeon-vllm-ultimate)
 
 </div>
 

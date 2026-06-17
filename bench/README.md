@@ -1,6 +1,6 @@
 # Benchmark scripts
 
-The two scripts in this folder are exactly what we use to measure the throughput numbers cited in the top-level [README's Performance section](../README.md#performance). Run them yourself to verify the numbers on your hardware, or to debug a configuration that isn't hitting expected throughput.
+The two scripts in this folder are exactly what we use to measure the throughput numbers cited in the top-level [README's Performance section](../README.md#performance--dgx-spark-dflash-vs-raw-baseline). Run them yourself to verify the numbers on your hardware, or to debug a configuration that isn't hitting expected throughput.
 
 ## Scripts
 
@@ -41,7 +41,7 @@ Each run takes ~2.5 minutes on a healthy DGX Spark. Both scripts require only `r
 
 ## Expected numbers (DGX Spark / GB10 / sm_121a, single-stream)
 
-From our just-run reference passes on the production v2.1 image:
+From reference passes on an earlier per-model image (the superseded `qwen36-v2.1` lineage); these have **not** yet been re-run on the unified production image `ghcr.io/aeon-7/aeon-vllm-ultimate:latest`:
 
 | Metric | Thinking OFF (headline) | Thinking ON (user-default) |
 |---|---|---|

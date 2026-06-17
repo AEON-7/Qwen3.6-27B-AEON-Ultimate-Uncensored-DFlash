@@ -1,3 +1,5 @@
+> **⚠️ Superseded build — retained for benchmark reproducibility.** This is the older `qwen36-v4` per-model image. Production has consolidated onto the unified image **`ghcr.io/aeon-7/aeon-vllm-ultimate:latest`** (= tag `:2026-06-11-pr41703`; rollback `:2026-06-04-pr44389`) with **DFlash `num_speculative_tokens: 12`**. For any actual deployment, use that image and follow the [root README](../../README.md). The `production` profile and `DFlash k=15` documented below are the **legacy v4 benchmark configuration**, not the current production recipe (which is n=12).
+
 # Qwen3.6 AEON Ultimate DFlash Spark vLLM
 
 Thin DGX Spark image for validating Qwen3.6 AEON Ultimate on the latest official
