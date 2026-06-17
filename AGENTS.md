@@ -10,7 +10,7 @@ This file is the authoritative source. If a piece of public documentation contra
 
 ## ⚠️ Hardware scope: this file is for DGX Spark / GB10 / sm_121a
 
-**Every flag, env var, container reference, and "DO NOT UNDO" rule in this file targets the DGX Spark (NVIDIA GB10, sm_121a, 128 GB unified memory) deployment.** That is the AEON-7 team's primary, measured-and-validated hardware platform. The container image, the v4 DFlash sliding-attention patch, the env var set, the `--gpu-memory-utilization` profile split, the `--max-num-seqs` profile split, and the `ENABLE_NVFP4_SM100=0` build guard — all of it is GB10-specific.
+**Every flag, env var, container reference, and "DO NOT UNDO" rule in this file targets the DGX Spark (NVIDIA GB10, sm_121a, 128 GB unified memory) deployment.** That is the AEON-7 team's primary, measured-and-validated hardware platform. The container image, the DFlash sliding-window-attention patch (PR #40898), the env var set, the `--gpu-memory-utilization` profile split, the `--max-num-seqs` profile split, and the `ENABLE_NVFP4_SM100=0` build guard — all of it is GB10-specific.
 
 **If you are operating on different hardware, the rules in this file do NOT directly apply.** Specifically:
 
@@ -28,19 +28,19 @@ If your task is on RTX PRO 6000, **do not apply this file's flags wholesale** �
 
 | Thing | Value | Don't second-guess |
 |---|---|---|
-| Container image | `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v4` (current production, 2026-05-10) | Don't substitute stock `vllm/vllm-openai` for production — stock is useful as a transparency baseline, but it has no DFlash sliding-attention overlay and no packaged Spark defaults. `:latest` now points at v4; pin explicitly to `:qwen36-v4` for reproducibility. |
+| Container image | `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` (= `:2026-06-11-pr41703`; rollback `:2026-06-04-pr44389`) | Don't substitute stock `vllm/vllm-openai` for production — stock is useful as a transparency baseline, but it has no DFlash sliding-attention overlay and no packaged Spark defaults. The old per-model lineage (`vllm-aeon-ultimate-dflash:qwen36-v3/v4/v5`, `vllm-spark-omni-q36`, `aeon-gemma-4-26b-a4b-dflash`) is now **consolidated** into this one unified image — it loads every correctly-quantized Qwen3.6-27B and Gemma-4 repo. Pin the dated tag for reproducibility. ENTRYPOINT is `/bin/bash`, so `docker run` MUST pass `--entrypoint vllm` then `serve ...`. |
 | Hardware target | DGX Spark (NVIDIA GB10, sm_121a, 128 GB unified) | Don't apply Hopper / Ada tuning advice |
-| **Recommended body** | **`AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS`** (modelopt format, ~21 GB) — **winning Spark config** | Alternate body: `AEON-7/.../-NVFP4` (compressed-tensors, ~26 GB, simpler but slower). The v4 XS+DFlash path averages **37.56 tok/s c=1** across six natural prompt categories vs **10.49 tok/s** for the dirty stock eager baseline. |
+| **Recommended body** | **`AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS`** (modelopt format, ~21 GB) — **winning Spark config** | Alternate body: `AEON-7/.../-NVFP4` (compressed-tensors, ~26 GB, simpler but slower). The XS+DFlash path is the benchmarked Spark winner; on the new container its long-context (~9k) draft acceptance is **45%** vs **19.7%** on the pre-fix image (2.3x). Short-context throughput is comparable to the prior image. |
 | Quantization | NVFP4 via patched CUTLASS path | **Don't force Marlin** — the patched CUTLASS path is faster than Marlin on this hardware. Use `--quantization modelopt` with the XS body, `--quantization compressed-tensors` with the regular `-NVFP4` body. |
-| Spec decode | **DFlash k=15** via `z-lab/Qwen3.6-27B-DFlash` drafter | Don't disable; don't switch to ngram/EAGLE. **DO NOT use `--speculative-config '{"method":"qwen3_5_mtp",...}'` on Spark** unless you are deliberately running an ablation. |
+| Spec decode | **DFlash `num_speculative_tokens: 12`** via `z-lab/Qwen3.6-27B-DFlash` drafter | Don't disable; don't switch to ngram/EAGLE. n=12 is the validated production default (n=8–15 sweep: tied short-context, best long-context acceptance). Drafter backend = **default** (do NOT add `attention_backend` to the spec-config; the default works for Qwen3.6 on this image). **DO NOT use `--speculative-config '{"method":"qwen3_5_mtp",...}'` on Spark** unless you are deliberately running an ablation. |
 | GPU memory util cap | **0.75 gateway default**, **0.85 LLM-only production**, never above 0.88 | Unified memory thrashes above 0.88 — this is not a typo |
 | Max model len | `256000` gateway default, `200000` LLM-only production | Set with `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` |
 | Max num seqs | **64 gateway default**, **16 LLM-only full-context production** | 64 supports one large working chat plus many short subagents; 16 is safer when many sequences approach full context |
-| Reasoning mode | enabled by default; pass `chat_template_kwargs.enable_thinking=false` to disable per request | Don't disable thinking globally. It is a core capability of this model and the v4 stack parses reasoning cleanly. |
+| Reasoning mode | enabled by default; pass `chat_template_kwargs.enable_thinking=false` to disable per request | Don't disable thinking globally. It is a core capability of this model and the unified-image stack parses reasoning cleanly. |
 
-The complete production configs are in [`docker-compose.yml`](docker-compose.yml) (regular `-NVFP4` body, simpler legacy stack) and [`docker-compose.spark-xs.yml`](docker-compose.spark-xs.yml) (XS body, current winning recipe). The Spark XS compose pins the `qwen36-v4` image. The compose files are **the source of truth**. Don't deviate without reading the rationale below.
+The complete production configs are in [`docker-compose.yml`](docker-compose.yml) (regular `-NVFP4` body, simpler legacy stack) and [`docker-compose.spark-xs.yml`](docker-compose.spark-xs.yml) (XS body, current winning recipe). Both compose files now pin `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` and set `--entrypoint vllm`. The compose files are **the source of truth**. Don't deviate without reading the rationale below.
 
-**DDTree note:** `container/qwen36-v5-ddtree-experimental/` is an experimental build track. Its M1 image adds `method="dflash_ddtree"` as a vLLM method, but M1 intentionally falls back to the proven flat DFlash verifier. Do not replace production v4 with v5 until tree verification and Qwen3.6 tree-aware GDN state commit pass the capability regression suite in [`docs/ddtree-vllm-integration-plan.md`](docs/ddtree-vllm-integration-plan.md).
+**DDTree note:** `container/qwen36-v5-ddtree-experimental/` is an experimental build track. Its M1 image adds `method="dflash_ddtree"` as a vLLM method, but M1 intentionally falls back to the proven flat DFlash verifier. Do not replace the production `aeon-vllm-ultimate:latest` image with the experimental DDTree track until tree verification and Qwen3.6 tree-aware GDN state commit pass the capability regression suite in [`docs/ddtree-vllm-integration-plan.md`](docs/ddtree-vllm-integration-plan.md).
 
 ---
 
@@ -56,7 +56,7 @@ VLLM_NVFP4_GEMM_BACKEND=marlin
 VLLM_TEST_FORCE_FP8_MARLIN=1
 ```
 
-**Why this is wrong:** The advice "use Marlin on SM121 because CUTLASS NVFP4 doesn't work" was **true for stock vLLM builds before our patches**. Our `vllm-aeon-ultimate-dflash` container ships with the patched CUTLASS NVFP4 kernels (PR #40191 + the `vllm-spark-omni-q36` patch series). On this image, **patched CUTLASS is faster than Marlin**. Forcing Marlin is a measurable regression.
+**Why this is wrong:** The advice "use Marlin on SM121 because CUTLASS NVFP4 doesn't work" was **true for stock vLLM builds before our patches**. Our `aeon-vllm-ultimate:latest` container ships with the patched CUTLASS NVFP4 kernels (PR #40191 + the omni-q36 patch series). On this image, **patched CUTLASS is faster than Marlin**. Forcing Marlin is a measurable regression.
 
 If you see a forum post or a stack-overflow answer telling you to set `VLLM_NVFP4_GEMM_BACKEND=marlin` on DGX Spark / GB10 / sm_121a, the post is from before the CUTLASS patches landed. Ignore it.
 
@@ -100,7 +100,7 @@ Production setting: **0.75** when ASR/TTS/embeddings or other GPU sidecars share
 pip install speculators==0.3.1
 ```
 
-**Why this is wrong:** external `speculators` packages are not required for the v4 path and can change imports in ways this image does not need. vLLM's native `--speculative-config '{"method":"dflash",...}'` already covers the DFlash path.
+**Why this is wrong:** external `speculators` packages are not required for the DFlash path and can change imports in ways this image does not need. vLLM's native `--speculative-config '{"method":"dflash",...}'` already covers the DFlash path.
 
 Don't add the package at runtime. Rebuild the image only if a future release has a concrete feature we intentionally adopt.
 
@@ -130,21 +130,22 @@ Don't add the package at runtime. Rebuild the image only if a future release has
 
 Without DFlash spec decode (i.e., if you removed `--speculative-config`), you can experiment higher, but that is a different deployment class. With DFlash on, stay inside the documented profile.
 
-### 9. Don't downgrade the image tag
+### 9. Don't downgrade the image tag or revert to the old per-model lineage
 
 ```
-# WRONG — tag confusion:
-image: ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:v1.2
-image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2     # different image; missing patches
+# WRONG — stale lineage / tag confusion:
+image: ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v4   # old per-model image, now consolidated
+image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2              # old image; missing patches
+image: ghcr.io/aeon-7/aeon-gemma-4-26b-a4b-dflash:v2        # old Gemma-only image, now consolidated
 ```
 
-The current production tag is **`qwen36-v4`** (built 2026-05-10; latest community vLLM nightly `0.20.2rc1.dev166+gf6490a284` + FlashInfer 0.6.11 + DFlash sliding-attention overlay). The `qwen36-v3` and `qwen36-v2.1` tags remain pullable for rollback. `:latest` now points at v4. Agents should still pin explicitly to `:qwen36-v4` for reproducibility — `:latest` will move forward whenever a new image ships. v1.x predecessor tags lacked PR #40191 and produced import failures on sm_121a-only builds.
+The canonical container for **all** Qwen3.6-27B (and Gemma-4) repos is now the single unified image **`ghcr.io/aeon-7/aeon-vllm-ultimate:latest`** (= dated tag `:2026-06-11-pr41703`; rollback `:2026-06-04-pr44389`). It consolidates the old per-model lineage (`vllm-aeon-ultimate-dflash:qwen36-v3/v4/v5`, `vllm-spark-omni-q36`, `aeon-gemma-4-26b-a4b-dflash`) and loads every correctly-quantized model in the fleet. Pin the dated tag for reproducibility — `:latest` will move forward whenever a new image ships. The old `vllm-spark-omni-q36` / v1.x predecessor tags lacked PR #40191 and produced import failures on sm_121a-only builds.
 
 ### 10. Don't `pip install` into the container
 
 ```
 # WRONG — agents try to "fix" missing packages this way:
-docker exec vllm-aeon-ultimate-v2 pip install some-package
+docker exec qwen36 pip install some-package
 ```
 
 **Why this is wrong:** The container's vLLM is **patched at source level**. Any `pip install` that pulls a vLLM, FlashInfer, or torch upgrade will overwrite the patched binaries with stock ones, breaking sm_121a NVFP4 support. If a package is missing, the correct fix is to rebuild the image with that package added — not to install at runtime.
@@ -176,7 +177,7 @@ These all appear in [`docker-compose.yml`](docker-compose.yml). Each line below 
 |---|---|---|---|
 | `--quantization modelopt` | required for the XS body | Tells vLLM the recommended XS checkpoint uses modelopt NVFP4 metadata. Use `compressed-tensors` only with the older regular `-NVFP4` body. | "Use `--quantization fp4` directly" — wrong; FP4 is encoded inside checkpoint metadata |
 | `--kv-cache-dtype auto` | BF16 | TurboQuant K8V4 is unsupported on hybrid models. See "Don't undo #6". | "Use fp8 KV cache for memory savings" — works but reduces acceptance length under DFlash |
-| (async scheduling) | **enabled (default)** | Async scheduling overlaps scheduler work with GPU work and is part of the v4 profile. | "Add `--no-async-scheduling` by default" — don't do this unless you are running a targeted TTFT-only experiment. |
+| (async scheduling) | **enabled (default)** | Async scheduling overlaps scheduler work with GPU work and is part of the production profile. | "Add `--no-async-scheduling` by default" — don't do this unless you are running a targeted TTFT-only experiment. |
 | `--max-model-len` | `256000` gateway, `200000` LLM-only production | 256K exposes nearly the full trained context for agent gateways. 200K is the safer solo-LLM profile when many sequences may be long. | "Always use one universal max len" — wrong on unified memory; choose the profile |
 | `--max-num-seqs` | `64` gateway, `16` LLM-only production | DFlash drafter budget plus side-service headroom. See "Don't undo #8". | "More concurrent seqs = more throughput" — true only until queueing and unified-memory pressure dominate |
 | `--max-num-batched-tokens` | `32768` | Prefill budget and practical Spark ceiling for this stack. | "Stock vLLM uses 65536" — OOMs or falls off the optimized path on GB10 unified memory under concurrent long-context |
@@ -192,14 +193,16 @@ These all appear in [`docker-compose.yml`](docker-compose.yml). Each line below 
 | `--limit-mm-per-prompt '{"image":4,"video":2}'` | recommended | Hard caps on multimodal inputs per request. Prevents pathological MM overload. | None |
 | `--mm-encoder-tp-mode data` | required | Vision encoder TP strategy. | "Use `weight` mode" — incompatible with this model's vision tower layout |
 | `--mm-processor-cache-type shm` | recommended | Shared-memory mm processor cache. | None |
-| `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'` | required for spec decode | DFlash spec-decode at k=15. This is the v4 Spark recipe benchmarked in README.md. | "Use EAGLE-3 / Medusa / ngram for better spec decode" — different drafter requirements; DFlash is the matching public drafter checkpoint for Qwen3.6-27B |
+| `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":12}'` | required for spec decode | DFlash spec-decode at `num_speculative_tokens: 12` (validated production default; the n=8–15 sweep found n=10–12 tied short-context, n=12 best long-context acceptance). Drafter backend = **default** — do NOT add `attention_backend` to this spec-config; the default works for Qwen3.6 on this image. This is the Spark recipe benchmarked in README.md. | "Use EAGLE-3 / Medusa / ngram for better spec decode" — different drafter requirements; DFlash is the matching public drafter checkpoint for Qwen3.6-27B |
 | `--served-model-name aeon-ultimate qwen36-ultimate aeon-fast aeon-deep` | flag | Four aliases for the same engine. Don't reduce — downstream tools assume these names exist. | None |
 
 ---
 
-## Patch series in the v4 image (the "what's actually in the binary")
+## Patch series in the unified image (the "what's actually in the binary")
 
-The current production image is `vllm-aeon-ultimate-dflash:qwen36-v4`, built **2026-05-10**. It is sourced from the latest community vLLM nightly we validated (`0.20.2rc1.dev166+gf6490a284`) plus **FlashInfer 0.6.11** and a DFlash sliding-window-attention overlay from vLLM PR #40898.
+The current production image is `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` (= `:2026-06-11-pr41703`). It is sourced from the community vLLM build we validated plus **FlashInfer** and the DFlash sliding-window-attention support that landed in vLLM PR #40898.
+
+**Why long-context drafting now holds up:** The z-lab Qwen3.6-27B DFlash drafter is a sliding-window model — 4 of its 5 layers use sliding-window attention (window 2048). vLLM PR #40898 (in `aeon-vllm-ultimate:latest`) runs those layers as proper SWA; earlier images ran them as full attention, so drafting collapsed once context grew past ~2048 tokens. PR #41703 additionally makes `--enable-prefix-caching` corruption-immune with DFlash. Net: long-context drafting holds up; short-context (<2048, one window) is unchanged.
 
 | PR | Title | What it fixes |
 |---|---|---|
@@ -209,10 +212,11 @@ The current production image is `vllm-aeon-ultimate-dflash:qwen36-v4`, built **2
 | #40662 | Unified spec-decode acceptance metrics | DFlash + DynamicProposer + EAGLE all report through the same `/metrics` schema |
 | #38479 | TurboQuant K8V4 backend | KV-cache compression backend (currently guarded out for hybrid models — see #39931 for the unblock) |
 
-- **FlashInfer 0.6.11** — newer GB10/Blackwell kernel package than v3's 0.6.9 stable.
-- **DFlash sliding-window-attention compatibility overlay** — applies the fix from vLLM PR #40898 while we wait for it to land upstream.
-- **Packaged profiles** — `gateway`, `production`, and `benchmark` profiles in the v4 container scripts so users can choose the correct memory/concurrency shape without hand-editing a long vLLM command.
-- **Measured stock-vs-v4 benchmark set** — 6 natural prompt categories x 8 concurrency levels through c=256, with TTFT and TPOT captured, now documented in `README.md`.
+- **FlashInfer** — current GB10/Blackwell kernel package.
+- **DFlash sliding-window-attention support (PR #40898)** — runs the drafter's 4 sliding-window layers as proper SWA, so long-context drafting no longer collapses past ~2048 tokens.
+- **Prefix-cache corruption fix for DFlash (PR #41703)** — makes `--enable-prefix-caching` corruption-immune under DFlash.
+- **Packaged profiles** — `gateway`, `production`, and `benchmark` profiles in the unified container scripts so users can choose the correct memory/concurrency shape without hand-editing a long vLLM command.
+- **Measured stock-vs-patched benchmark set** — 6 natural prompt categories x 8 concurrency levels through c=256, with TTFT and TPOT captured, now documented in `README.md`.
 
 - **TurboQuant @ AEON-7/turboquant fix/cuda-graph-safe-qjl-powers** — fork with the cached `_POWERS` per-device patch that prevents the CUDA-graph capture crash on TurboQuant boot (upstream PR 0xSero/turboquant#12 still pending)
 - **External speculators package skipped** — vLLM's native `--speculative-config` covers DFlash without an extra import surface.
@@ -221,7 +225,7 @@ If an agent is debugging an issue and finds a stack-overflow / forum thread sayi
 
 ### Why "build" instead of "pip install vllm"
 
-A second-pass agent considering an upgrade should compare to v3 (not stock vLLM). v3 is a *fresh source build* against the official v0.20.0 release commit, with FlashInfer 0.6.9 stable, and our 5 sm_121a patches applied. Running `pip install vllm==0.20.0` over this image still loses: the patched FlashInfer (rc1 → stable diff), the 5 python-level patches, and the TurboQuant fork. The image is the deployment artifact — rebuild from `Dockerfile.v3`, don't `pip install`.
+A second-pass agent considering an upgrade should compare to the unified `aeon-vllm-ultimate:latest` image (not stock vLLM). That image is a *fresh source build* with the sm_121a patches plus the DFlash SWA (PR #40898) and prefix-cache (PR #41703) fixes applied. Running `pip install vllm==...` over this image still loses: the patched FlashInfer, the python-level sm_121a patches, and the TurboQuant fork. The image is the deployment artifact — rebuild it, don't `pip install`.
 
 ---
 
@@ -231,7 +235,7 @@ A second-pass agent considering an upgrade should compare to v3 (not stock vLLM)
 
 **Symptom:** Agent sees vLLM v0.20.0 in the image and runs `pip install --upgrade vllm` to "fix things."
 
-**What actually happens:** Overwrites the patched binaries with stock vLLM. Loss of: SM121 CUTLASS NVFP4 kernels, hybrid GDN spec-decode alignment, all 5 patches above.
+**What actually happens:** Overwrites the patched binaries with stock vLLM. Loss of: SM121 CUTLASS NVFP4 kernels, hybrid GDN spec-decode alignment, and the DFlash SWA / prefix-cache patches above.
 
 **Diagnostic for this failure:** If after the upgrade you see "no kernel image is available for execution on the device" or "PTX JIT compilation failed", you've hit it.
 
@@ -253,23 +257,23 @@ If the body is the XS variant and you set `--quantization compressed-tensors`, y
 
 ### Failure mode: "Let me set `method:qwen3_5_mtp` since the body has an MTP head"
 
-**Symptom:** Agent inspects the XS body's safetensors, sees 15 `mtp.*` tensors, and concludes "obviously use the MTP spec method."
+**Symptom:** Agent inspects the XS body's safetensors, sees `mtp.*` tensors, and concludes "obviously use the MTP spec method."
 
-**What actually happens:** On DGX Spark, the current documented path is external DFlash k=15. The MTP head sits in the safetensors for compatibility with dedicated-VRAM Blackwell workflows, but it is not the Spark serving method.
+**What actually happens:** On DGX Spark, the current documented path is external DFlash with `num_speculative_tokens: 12`. The MTP head sits in the safetensors for compatibility with dedicated-VRAM Blackwell workflows, but it is not the Spark serving method.
 
 **Diagnostic:** The serve command says `method:"qwen3_5_mtp"` instead of `method:"dflash"`, or the DFlash drafter model is not mounted.
 
-**Fix:** On DGX Spark, **always** use `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'`. The MTP method is correct for **dedicated-VRAM Blackwell** (RTX 5090, RTX PRO 6000, B100/B200), not unified memory. See [the hardware-routing section in README.md](README.md#hardware-compatibility-matrix).
+**Fix:** On DGX Spark, **always** use `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":12}'`. The MTP method is correct for **dedicated-VRAM Blackwell** (RTX 5090, RTX PRO 6000, B100/B200), not unified memory. See [the hardware-routing section in README.md](README.md#hardware-compatibility-matrix).
 
 ### Failure mode: "Let me disable thinking to make this faster"
 
 **Symptom:** Agent reads "thinking adds latency" advice from a generic LLM-deployment forum and bakes `chat_template_kwargs.enable_thinking=false` into the production config.
 
-**What actually happens:** Disabling thinking globally removes one of the model's core capabilities and can break workflows that expect reasoning traces. v4 parses reasoning cleanly, so the gateway can decide when to show or hide it.
+**What actually happens:** Disabling thinking globally removes one of the model's core capabilities and can break workflows that expect reasoning traces. The unified image parses reasoning cleanly, so the gateway can decide when to show or hide it.
 
 **Diagnostic:** Server-side decode rate identical or worse with `enable_thinking=false` baked in vs allowing thinking to happen by default.
 
-**Fix:** Don't bake `enable_thinking=false` into the server-side defaults. The model and v4 image preserve thinking as a first-class capability. Per-request override is fine for callers who want pure-content responses, but don't make it the global default.
+**Fix:** Don't bake `enable_thinking=false` into the server-side defaults. The model and the unified image preserve thinking as a first-class capability. Per-request override is fine for callers who want pure-content responses, but don't make it the global default.
 
 ### Failure mode: "This is a 27B model, I'll allocate 64 GB GPU memory"
 
@@ -319,12 +323,12 @@ Run these in order. If any fail, **don't try to fix the higher-level symptom —
 docker ps --filter "name=vllm-aeon-ultimate" --format "{{.Image}} | {{.Status}}"
 ```
 
-Expected: `ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v4 | Up <time> (healthy)`. (`qwen36-v3` is acceptable only as an intentional rollback; older tags warrant investigation.)
+Expected: `ghcr.io/aeon-7/aeon-vllm-ultimate:latest | Up <time> (healthy)` (or the dated tag `:2026-06-11-pr41703`). (The `:2026-06-04-pr44389` rollback tag is acceptable only as an intentional rollback; the old `vllm-aeon-ultimate-dflash:qwen36-*` lineage warrants investigation.)
 
 ### 2. vLLM accepted the config and booted
 
 ```bash
-docker logs vllm-aeon-ultimate-v2 --tail 50 2>&1 | grep -E "ERROR|Traceback|started|listening"
+docker logs qwen36 --tail 50 2>&1 | grep -E "ERROR|Traceback|started|listening"
 ```
 
 Expected: a `Started server process` line and **no** `Traceback` or `RuntimeError`.
@@ -448,7 +452,7 @@ If you've checked all the above and you're still confident the issue is real, th
 
 ## Out-of-scope optimizations to skip (or schedule for later)
 
-These are tempting but **either don't help or actively break things** for this stack as of v3.
+These are tempting but **either don't help or actively break things** for this stack as of the current unified image.
 
 | Optimization | Why to skip |
 |---|---|

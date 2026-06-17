@@ -3,21 +3,29 @@
 # This is the FULL production v2 config used to measure the benchmarks reported in README.md.
 # Same image, same flags, same env, same speculative-decoding pipeline.
 #
-# Image:       ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3
-# Built on:    vLLM v0.20.0 (101584af0a, tagged 2026-04-23) + 5 patches:
-#                #40092 SWA backend assert fix
-#                #40454 default-align mamba cache w/ spec-decode
-#                #40191 ENABLE_NVFP4_SM100=0 guard
-#                #40662 unified spec-decode acceptance metrics
-#                #38479 TurboQuant K8V4 backend baked in
-#              FlashInfer 0.6.9rc1 (b12x backend — first SM121 NVFP4 GEMM path)
+# Image:       ghcr.io/aeon-7/aeon-vllm-ultimate:latest
+#                (= tag :2026-06-11-pr41703; rollback tag :2026-06-04-pr44389)
+# Built on:    vLLM (sm_121a patched) + the SWA/DFlash long-context fixes:
+#                #40898 run the DFlash drafter's sliding-window layers as proper SWA
+#                #41703 --enable-prefix-caching made corruption-immune with DFlash
+#                plus the AEON-7 sm_121a patch stack (SWA backend assert, mamba spec-decode
+#                cache align, ENABLE_NVFP4_SM100=0 guard, unified spec-decode metrics,
+#                TurboQuant K8V4 backend)
+#              FlashInfer (b12x backend — SM121 NVFP4 GEMM path)
 #              TurboQuant @ AEON-7/turboquant fix/cuda-graph-safe-qjl-powers
-#              Speculators v0.3 (multi-method registry + DynamicProposer)
-#              All v1.2 patches reapplied
+#
+#              Why this image matters for DFlash long context: the z-lab Qwen3.6-27B
+#              DFlash drafter is a sliding-window model — 4 of its 5 layers use
+#              sliding-window attention (window 2048). PR #40898 (in
+#              aeon-vllm-ultimate:latest) runs those layers as proper SWA; earlier
+#              images ran them as full attention, so drafting collapsed once context
+#              grew past ~2048 tokens. PR #41703 additionally makes
+#              --enable-prefix-caching corruption-immune with DFlash. Net: long-context
+#              drafting holds up; short-context (<2048, one window) is unchanged.
 #
 # Hardware:    DGX Spark (NVIDIA GB10, 128 GB unified memory, sm_121a)
 #
-# Pipeline:    NVFP4 main model + DFlash speculative decoding (k=15) via architecture-
+# Pipeline:    NVFP4 main model + DFlash speculative decoding (n=12) via architecture-
 #              matched drafter. Spec-decode acceptance averages high enough on this
 #              dense 27B that DFlash is the recommended production path.
 #
@@ -41,13 +49,18 @@
 
 services:
   vllm:
-    image: ghcr.io/aeon-7/vllm-aeon-ultimate-dflash:qwen36-v3
+    image: ghcr.io/aeon-7/aeon-vllm-ultimate:latest
     container_name: aeon-ultimate
     restart: unless-stopped
     network_mode: host
     ipc: host
     ulimits:
       memlock: -1
+
+    # The image ENTRYPOINT is /bin/bash, so we override it to `vllm` and pass
+    # `serve ...` as the command. (Leaving the entrypoint as bash would run
+    # `bash serve ...` and fail.)
+    entrypoint: vllm
 
     environment:
       # ─── Core vLLM ───
@@ -81,52 +94,85 @@ services:
     volumes:
       # Main NVFP4 weights (~26 GB)
       - ./models/aeon-ultimate-nvfp4:/models/aeon-ultimate
-      # DFlash drafter (~1 GB) for k=15 speculative decoding
+      # DFlash drafter (~1 GB) for n=12 speculative decoding
       - ./models/dflash-drafter:/models/dflash-drafter
 
+    # entrypoint is `vllm` (above); command starts at the `serve` subcommand.
     command:
-      - bash
-      - -c
-      - |
-        exec vllm serve /models/aeon-ultimate \
-          --served-model-name aeon-ultimate qwen36-ultimate aeon-fast aeon-deep \
-          --host 0.0.0.0 --port 8000 \
-          --tensor-parallel-size 1 \
-          --dtype auto \
-          --quantization compressed-tensors \
-          --kv-cache-dtype auto \
-          --max-model-len 200000 \
-          --max-num-seqs 16 \
-          --max-num-batched-tokens 32768 \
-          --gpu-memory-utilization 0.85 \
-          --enable-chunked-prefill \
-          --no-enable-prefix-caching \
-          --load-format safetensors \
-          --trust-remote-code \
-          --enable-auto-tool-choice \
-          --tool-call-parser qwen3_coder \
-          --reasoning-parser qwen3 \
-          --attention-backend flash_attn \
-          --limit-mm-per-prompt '{"image": 4, "video": 2}' \
-          --mm-encoder-tp-mode data \
-          --mm-processor-cache-type shm \
-          --speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":15}'
-        # Notes on configuration choices:
-        #   - DFlash k=15 — confirmed best for this dense 27B per AEON-7 production
-        #     benchmarks. Architecture-matched drafter (z-lab/Qwen3.6-27B-DFlash) keeps
-        #     spec-decode acceptance well above the break-even point where the drafter
-        #     itself becomes overhead.
-        #   - DynamicProposer (per-seq dynamic k) was attempted but Speculators v0.3 has
-        #     a pydantic-incompatibility bug at this image's build time. Plain DFlash
-        #     k=15 is the proven path until Speculators ships a fix.
-        #   - TurboQuant K8V4 KV-cache compression (3.76×) was attempted but raises
-        #     "TurboQuant KV cache is not supported for hybrid (attention + Mamba)
-        #     models" — a deliberate guard in the vLLM integration code, not a kernel
-        #     issue. v2.1+ may add --kv-cache-dtype-skip-layers to apply K8V4 to the
-        #     16 full-attention layers only.
-        #   - max-num-seqs is 16 (not 64) because the DFlash drafter's own KV state
-        #     and the spec-decode scheduler's bookkeeping eat into the unified-memory
-        #     budget. If you disable DFlash and run plain decode, raise to 32-64.
+      - serve
+      - /models/aeon-ultimate
+      - --served-model-name
+      - aeon-ultimate
+      - qwen36-ultimate
+      - aeon-fast
+      - aeon-deep
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --tensor-parallel-size
+      - "1"
+      - --dtype
+      - auto
+      - --quantization
+      - compressed-tensors
+      - --kv-cache-dtype
+      - auto
+      - --max-model-len
+      - "200000"
+      - --max-num-seqs
+      - "16"
+      - --max-num-batched-tokens
+      - "32768"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --enable-chunked-prefill
+      - --no-enable-prefix-caching
+      - --load-format
+      - safetensors
+      - --trust-remote-code
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --reasoning-parser
+      - qwen3
+      - --attention-backend
+      - flash_attn
+      - --limit-mm-per-prompt
+      - '{"image": 4, "video": 2}'
+      - --mm-encoder-tp-mode
+      - data
+      - --mm-processor-cache-type
+      - shm
+      # DFlash speculative decoding: n=12, DEFAULT drafter attention backend.
+      # Do NOT add "attention_backend" to the spec-config — the default works for
+      # Qwen3.6 on aeon-vllm-ultimate:latest (unlike Gemma, which needed flash_attn).
+      # Do NOT set --kv-cache-dtype to anything but BF16/auto: the non-causal DFlash
+      # drafter requires BF16 KV.
+      - --speculative-config
+      - '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":12}'
+
+    # Notes on configuration choices:
+    #   - DFlash n=12 — validated production default. An n=8-15 sweep found n=10-12
+    #     statistically tied at short context, with n=12 giving the best long-context
+    #     acceptance. The architecture-matched drafter (z-lab/Qwen3.6-27B-DFlash) keeps
+    #     spec-decode acceptance well above the break-even point where the drafter
+    #     itself becomes overhead.
+    #   - Drafter attention backend is left at DEFAULT (no attention_backend in the
+    #     spec-config). The default path correctly runs the drafter's 4 sliding-window
+    #     layers as proper SWA on aeon-vllm-ultimate:latest (PR #40898), so long-context
+    #     drafting holds up; short-context (<2048, single window) is unchanged.
+    #   - DynamicProposer (per-seq dynamic k) was attempted but Speculators v0.3 has
+    #     a pydantic-incompatibility bug at import on pydantic 2.12. vLLM's native
+    #     --speculative-config covers DFlash fine, so plain DFlash n=12 is the path.
+    #   - TurboQuant K8V4 KV-cache compression (3.76×) was attempted but raises
+    #     "TurboQuant KV cache is not supported for hybrid (attention + Mamba)
+    #     models" — a deliberate guard in the vLLM integration code, not a kernel
+    #     issue. v2.1+ may add --kv-cache-dtype-skip-layers to apply K8V4 to the
+    #     16 full-attention layers only.
+    #   - max-num-seqs is 16 (not 64) because the DFlash drafter's own KV state
+    #     and the spec-decode scheduler's bookkeeping eat into the unified-memory
+    #     budget. If you disable DFlash and run plain decode, raise to 32-64.
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
