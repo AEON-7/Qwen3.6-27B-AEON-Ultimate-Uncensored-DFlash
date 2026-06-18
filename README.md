@@ -24,6 +24,30 @@ A **fully uncensored, capability-enhanced** abliteration of [Qwen/Qwen3.6-27B](h
 
 **This is the headline.** On DGX Spark / GB10, the AEON DFlash container turns the default “it runs, but it feels slow” baseline into a usable long-context local agent model.
 
+### v0.23.0 build — stock vanilla vs maximally optimized
+
+<p align="center"><img src="assets/perf/qwen27b_stock_vs_optimized.svg" width="100%" alt="Stock vanilla vLLM vs AEON-optimized single-stream decode tok/s by category — up to 5.3x faster"></p>
+<p align="center"><img src="assets/perf/qwen27b_concurrency.svg" width="100%" alt="Aggregate throughput scaling from 1 to 64 concurrent requests on aeon-vllm-ultimate"></p>
+
+Measured on the current production image **`ghcr.io/aeon-7/aeon-vllm-ultimate:latest`** (vLLM 0.23.0 + AEON sm_121a build + DFlash `num_speculative_tokens: 12`), single-stream (c=1), by category:
+
+| Category | 🟢 Decode tok/s | TTFT p50 | TPOT p50 | Prefill (PP) | DFlash accept |
+|---|---:|---:|---:|---:|---:|
+| Coding | **42** | 140 ms | 23.9 ms | 322 tok/s | 34% |
+| Math | **47** | 244 ms | 21.1 ms | 229 tok/s | 42% |
+| Reasoning | **56** | 234 ms | 17.8 ms | 183 tok/s | 50% |
+| Prose | **34** | 146 ms | 29.4 ms | 220 tok/s | 27% |
+| Natural language | **38** | 137 ms | 26.1 ms | 248 tok/s | 31% |
+| Extraction / JSON | **44** | 246 ms | 22.6 ms | 195 tok/s | 37% |
+
+vs a **stock vanilla `vllm/vllm-openai` baseline of ~10.5 tok/s** (no DFlash, no sm_121a optimizations) → **up to 5.3× faster decode (≈4× average)**, and it now scales cleanly to **c=64 concurrent** with no crash (the pre-fix image crashed under concurrent speculative decoding — see [What we fixed for the DGX Spark](#what-we-fixed-for-the-dgx-spark)).
+
+> **Stock baseline note:** the stock/un-optimized figures are vanilla vLLM (no DFlash, no AEON/sm_121a optimizations) and are **provisional — to be refreshed** with a fresh fully-vanilla re-benchmark on the current version.
+
+---
+
+#### Earlier `qwen36-v4` reference (DFlash k=15)
+
 The throughput table below was measured on the earlier `qwen36-v4` image with DFlash k=15. The production container and recipe have since been unified onto `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` with **DFlash `num_speculative_tokens: 12`** (see [why long context](#why-the-spark-recipe-is-tuned-for-long-context) below). The single-stream throughput figures here are representative of the Spark DFlash path; the unified image's specific win is **long-context draft acceptance — 45% vs 19.7% on the pre-fix image (a 2.3× gain) at ~9k-token context** — not short-context tok/s.
 
 | Deployment | Container | DFlash | CUDA graphs | Tool calling | Avg c=1 decode |
@@ -123,6 +147,19 @@ Raw benchmark files:
 The DFlash sweep used natural prompts across coding, math, reasoning, prose, everyday language, and extraction/JSON. It intentionally used a short-context benchmark profile to isolate decode/scheduler behavior: `--max-model-len 2048`, `--max-num-seqs 256`, prefix caching disabled, thinking enabled, 200 output tokens, minimum 16 samples per point, 20% trimmed median. For production DFlash gateway use, prefix caching is workload-dependent: it is valuable when many agents share a stable prompt prefix, but DDTree research modes keep it off while branch-state correctness is under development.
 
 ---
+
+## What we fixed for the DGX Spark
+
+All AEON models run on one unified container — **`ghcr.io/aeon-7/aeon-vllm-ultimate:latest`** (= `:2026-06-18-v0.23.0-dflashfix`; rollback `:2026-06-11-pr41703`) — vLLM v0.23.0 built from source for GB10 / sm_121a and merged with the AEON speculative-decoding stack.
+
+| Fix | What it does | Why it matters on GB10 |
+|---|---|---|
+| **DFlash high-concurrency fix** *(new)* | Slices the speculative drafter's KV block-table to the unpadded batch | The drafter previously **crashed at ≥32 concurrent requests** (padded-vs-unpadded block-table shape mismatch in FlashAttention). Now scales cleanly to **c=64**. A port of upstream PR #43982 (fixed for MTP, never applied to DFlash) — present and unfixed even in the prior image. |
+| **Triton NVFP4 KV cache** (PR #44389) | Software NVFP4 KV-cache path | The only 4-bit KV path on sm_121a (upstream's is hard-gated to B200) → ~3× KV capacity / longer context per GB of unified memory. |
+| **DFlash sliding-window attention** (PR #40898) | Runs the drafter's SWA layers as true sliding-window | Long-context draft acceptance holds as agent histories grow, instead of collapsing past ~2k tokens. |
+| **sm_121a-native build** | `TORCH_CUDA_ARCH_LIST=12.1a`, `ENABLE_NVFP4_SM100=0` | Compiles the SM120-family CUTLASS NVFP4/FP8 kernels GB10 actually dispatches to — true 4-bit tensor-core throughput, no dead B200-only kernels. |
+| **sm_121a boot + CUDA-graph patches** | RTLD-lazy `_C_stable_libtorch` load; spec-decode CUDA-graph capture-size alignment | Boots past MXFP4 (SM100-only) symbols absent on GB10; prevents `cudaErrorIllegalAddress` on partial-acceptance decode steps under speculative decoding. |
+| **Unified-memory tuning** | `--gpu-memory-utilization ≤0.70`, FULL CUDA graphs, async scheduling, z-lab DFlash drafter | GB10 shares one LPDDR5X pool across CPU + GPU; conservative KV headroom avoids page-thrash while keeping FULL-graph + speculative-decode throughput. |
 
 ## Model Variants
 
