@@ -105,6 +105,8 @@ services:
           --dtype auto \
           --quantization modelopt \
           --kv-cache-dtype auto \
+          --mamba-cache-dtype float16 \
+          --mamba-block-size 256 \
           --max-model-len 256000 \
           --max-num-seqs 64 \
           --max-num-batched-tokens 32768 \
