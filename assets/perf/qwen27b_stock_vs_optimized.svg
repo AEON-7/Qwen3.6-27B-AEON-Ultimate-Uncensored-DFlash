@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 540" font-family="Segoe UI,Helvetica,Arial,sans-serif">
+<rect width="940" height="540" rx="14" fill="#0b0f16"/>
+<text x="70" y="38" fill="#e6edf3" font-size="24" font-weight="700">Qwen3.6-27B-AEON-Ultimate (NVFP4 MTP-XS)</text>
+<text x="70" y="62" fill="#58a6ff" font-size="15" font-weight="600">Up to 5.3× faster decode · 4.2× average vs stock vanilla vLLM</text>
+<text x="70" y="84" fill="#8b98a9" font-size="12.5">Single-stream decode (tok/s, c=1) on DGX Spark GB10 / sm_121a &#183; stock vanilla vLLM vs AEON-optimized (DFlash)</text>
+<line x1="70" y1="420.0" x2="910" y2="420.0" stroke="#1e2733" stroke-width="1"/>
+<text x="62" y="424.0" fill="#8b98a9" font-size="11" text-anchor="end">0</text>
+<line x1="70" y1="342.5" x2="910" y2="342.5" stroke="#1e2733" stroke-width="1"/>
+<text x="62" y="346.5" fill="#8b98a9" font-size="11" text-anchor="end">16</text>
+<line x1="70" y1="265.0" x2="910" y2="265.0" stroke="#1e2733" stroke-width="1"/>
+<text x="62" y="269.0" fill="#8b98a9" font-size="11" text-anchor="end">33</text>
+<line x1="70" y1="187.5" x2="910" y2="187.5" stroke="#1e2733" stroke-width="1"/>
+<text x="62" y="191.5" fill="#8b98a9" font-size="11" text-anchor="end">49</text>
+<line x1="70" y1="110.0" x2="910" y2="110.0" stroke="#1e2733" stroke-width="1"/>
+<text x="62" y="114.0" fill="#8b98a9" font-size="11" text-anchor="end">66</text>
+<rect x="95.0" y="369.9" width="42.0" height="50.1" rx="3" fill="#e5534b"/>
+<rect x="143.0" y="224.3" width="42.0" height="195.7" rx="3" fill="#3fb950"/>
+<text x="116.0" y="363.9" fill="#e5534b" font-size="11" text-anchor="middle">11</text>
+<text x="164.0" y="218.3" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle">42</text>
+<text x="140.0" y="98.0" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">3.9&#215;</text>
+<text x="140.0" y="442.0" fill="#8b98a9" font-size="12" text-anchor="middle">Coding</text>
+<rect x="235.0" y="373.1" width="42.0" height="46.9" rx="3" fill="#e5534b"/>
+<rect x="283.0" y="198.5" width="42.0" height="221.5" rx="3" fill="#3fb950"/>
+<text x="256.0" y="367.1" fill="#e5534b" font-size="11" text-anchor="middle">10</text>
+<text x="304.0" y="192.5" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle">47</text>
+<text x="280.0" y="98.0" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">4.7&#215;</text>
+<text x="280.0" y="442.0" fill="#8b98a9" font-size="12" text-anchor="middle">Math</text>
+<rect x="375.0" y="370.6" width="42.0" height="49.4" rx="3" fill="#e5534b"/>
+<rect x="423.0" y="157.3" width="42.0" height="262.7" rx="3" fill="#3fb950"/>
+<text x="396.0" y="364.6" fill="#e5534b" font-size="11" text-anchor="middle">11</text>
+<text x="444.0" y="151.3" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle">56</text>
+<text x="420.0" y="98.0" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">5.3&#215;</text>
+<text x="420.0" y="442.0" fill="#8b98a9" font-size="12" text-anchor="middle">Reasoning</text>
+<rect x="515.0" y="370.4" width="42.0" height="49.6" rx="3" fill="#e5534b"/>
+<rect x="563.0" y="260.3" width="42.0" height="159.7" rx="3" fill="#3fb950"/>
+<text x="536.0" y="364.4" fill="#e5534b" font-size="11" text-anchor="middle">11</text>
+<text x="584.0" y="254.3" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle">34</text>
+<text x="560.0" y="98.0" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">3.2&#215;</text>
+<text x="560.0" y="442.0" fill="#8b98a9" font-size="12" text-anchor="middle">Prose</text>
+<rect x="655.0" y="370.5" width="42.0" height="49.5" rx="3" fill="#e5534b"/>
+<rect x="703.0" y="240.6" width="42.0" height="179.4" rx="3" fill="#3fb950"/>
+<text x="676.0" y="364.5" fill="#e5534b" font-size="11" text-anchor="middle">11</text>
+<text x="724.0" y="234.6" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle">38</text>
+<text x="700.0" y="98.0" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">3.6&#215;</text>
+<text x="700.0" y="442.0" fill="#8b98a9" font-size="12" text-anchor="middle">Natural language</text>
+<rect x="795.0" y="370.5" width="42.0" height="49.5" rx="3" fill="#e5534b"/>
+<rect x="843.0" y="213.0" width="42.0" height="207.0" rx="3" fill="#3fb950"/>
+<text x="816.0" y="364.5" fill="#e5534b" font-size="11" text-anchor="middle">11</text>
+<text x="864.0" y="207.0" fill="#3fb950" font-size="12" font-weight="700" text-anchor="middle">44</text>
+<text x="840.0" y="98.0" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">4.2&#215;</text>
+<text x="840.0" y="442.0" fill="#8b98a9" font-size="12" text-anchor="middle">Extraction/JSON</text>
+<rect x="70" y="494" width="14" height="14" rx="3" fill="#e5534b"/><text x="90" y="506" fill="#e6edf3" font-size="12.5">Stock vanilla vLLM (no DFlash, no opts)</text>
+<rect x="370" y="494" width="14" height="14" rx="3" fill="#3fb950"/><text x="390" y="506" fill="#e6edf3" font-size="12.5">AEON aeon-vllm-ultimate:latest (DFlash)</text>
+<text x="910" y="524" fill="#8b98a9" font-size="10" text-anchor="end">&#215; = speedup &#183; stock provisional, pending vanilla re-benchmark</text>
+</svg>
