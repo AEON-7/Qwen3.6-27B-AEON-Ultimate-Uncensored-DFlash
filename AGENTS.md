@@ -28,7 +28,7 @@ If your task is on RTX PRO 6000, **do not apply this file's flags wholesale** �
 
 | Thing | Value | Don't second-guess |
 |---|---|---|
-| Container image | `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` (= `:2026-06-11-pr41703`; rollback `:2026-06-04-pr44389`) | Don't substitute stock `vllm/vllm-openai` for production — stock is useful as a transparency baseline, but it has no DFlash sliding-attention overlay and no packaged Spark defaults. The old per-model lineage (`vllm-aeon-ultimate-dflash:qwen36-v3/v4/v5`, `vllm-spark-omni-q36`, `aeon-gemma-4-26b-a4b-dflash`) is now **consolidated** into this one unified image — it loads every correctly-quantized Qwen3.6-27B and Gemma-4 repo. Pin the dated tag for reproducibility. ENTRYPOINT is `/bin/bash`, so `docker run` MUST pass `--entrypoint vllm` then `serve ...`. |
+| Container image | `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` (= `:2026-06-18-v0.23.0-dflashfix`; rollback `:2026-06-11-pr41703`) | Don't substitute stock `vllm/vllm-openai` for production — stock is useful as a transparency baseline, but it has no DFlash sliding-attention overlay and no packaged Spark defaults. The old per-model lineage (`vllm-aeon-ultimate-dflash:qwen36-v3/v4/v5`, `vllm-spark-omni-q36`, `aeon-gemma-4-26b-a4b-dflash`) is now **consolidated** into this one unified image — it loads every correctly-quantized Qwen3.6-27B and Gemma-4 repo. Pin the dated tag for reproducibility. ENTRYPOINT is `/bin/bash`, so `docker run` MUST pass `--entrypoint vllm` then `serve ...`. |
 | Hardware target | DGX Spark (NVIDIA GB10, sm_121a, 128 GB unified) | Don't apply Hopper / Ada tuning advice |
 | **Recommended body** | **`AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS`** (modelopt format, ~21 GB) — **winning Spark config** | Alternate body: `AEON-7/.../-NVFP4` (compressed-tensors, ~26 GB, simpler but slower). The XS+DFlash path is the benchmarked Spark winner; on the new container its long-context (~9k) draft acceptance is **45%** vs **19.7%** on the pre-fix image (2.3x). Short-context throughput is comparable to the prior image. |
 | Quantization | NVFP4 via patched CUTLASS path | **Don't force Marlin** — the patched CUTLASS path is faster than Marlin on this hardware. Use `--quantization modelopt` with the XS body, `--quantization compressed-tensors` with the regular `-NVFP4` body. |
@@ -139,7 +139,7 @@ image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2              # old image; missing
 image: ghcr.io/aeon-7/aeon-gemma-4-26b-a4b-dflash:v2        # old Gemma-only image, now consolidated
 ```
 
-The canonical container for **all** Qwen3.6-27B (and Gemma-4) repos is now the single unified image **`ghcr.io/aeon-7/aeon-vllm-ultimate:latest`** (= dated tag `:2026-06-11-pr41703`; rollback `:2026-06-04-pr44389`). It consolidates the old per-model lineage (`vllm-aeon-ultimate-dflash:qwen36-v3/v4/v5`, `vllm-spark-omni-q36`, `aeon-gemma-4-26b-a4b-dflash`) and loads every correctly-quantized model in the fleet. Pin the dated tag for reproducibility — `:latest` will move forward whenever a new image ships. The old `vllm-spark-omni-q36` / v1.x predecessor tags lacked PR #40191 and produced import failures on sm_121a-only builds.
+The canonical container for **all** Qwen3.6-27B (and Gemma-4) repos is now the single unified image **`ghcr.io/aeon-7/aeon-vllm-ultimate:latest`** (= dated tag `:2026-06-18-v0.23.0-dflashfix`; rollback `:2026-06-11-pr41703`). It consolidates the old per-model lineage (`vllm-aeon-ultimate-dflash:qwen36-v3/v4/v5`, `vllm-spark-omni-q36`, `aeon-gemma-4-26b-a4b-dflash`, `vllm-spark-*`, `vllm-dflash`) and loads every correctly-quantized model in the fleet — those are historical only. Pin the dated tag for reproducibility — `:latest` will move forward whenever a new image ships. The old `vllm-spark-omni-q36` / v1.x predecessor tags lacked PR #40191 and produced import failures on sm_121a-only builds.
 
 ### 10. Don't `pip install` into the container
 
@@ -200,7 +200,13 @@ These all appear in [`docker-compose.yml`](docker-compose.yml). Each line below 
 
 ## Patch series in the unified image (the "what's actually in the binary")
 
-The current production image is `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` (= `:2026-06-11-pr41703`). It is sourced from the community vLLM build we validated plus **FlashInfer** and the DFlash sliding-window-attention support that landed in vLLM PR #40898.
+The current production image is `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` (= `:2026-06-18-v0.23.0-dflashfix`; rollback `:2026-06-11-pr41703`). It is a **from-source build of vLLM 0.23.0 for sm_121a** (NOT 0.22.1 / 0.20.1) with **FlashInfer 0.6.12** (not 0.6.8.post1), the AEON speculative-decoding stack, and the patch set below.
+
+**Runtime patches (TWO remain):** `cuda_optional_import` (RTLD-lazy `_C_stable_libtorch` load so the engine boots past SM100-only MXFP4 symbols absent on GB10) and `cudagraph_align` (spec-decode CUDA-graph capture-size alignment, preventing `cudaErrorIllegalAddress` on partial-acceptance decode steps). The old `kv_cache_utils` patch was **DROPPED in 0.23.0** (upstream made `block_size` an int) — if you remember "three patches including kv_cache_utils," that is stale; it is two.
+
+**NEW in this image — DFlash high-concurrency block-table fix:** a port of upstream PR #43982 (which fixed the padded-vs-unpadded KV block-table shape mismatch for MTP but never applied it to DFlash). Without it the DFlash drafter **crashed at ≥32 concurrent requests** in FlashAttention; with it, DFlash scales cleanly to c=64.
+
+**Carried open-upstream PRs (still open / absent from stock 0.23.0 → kept in our build):** #44389 (Triton NVFP4 KV cache — the only 4-bit KV path on sm_121a), #40898 (DFlash sliding-window attention), #41703 (Gemma-4 / DFlash prefix-cache-safe).
 
 **Why long-context drafting now holds up:** The z-lab Qwen3.6-27B DFlash drafter is a sliding-window model — 4 of its 5 layers use sliding-window attention (window 2048). vLLM PR #40898 (in `aeon-vllm-ultimate:latest`) runs those layers as proper SWA; earlier images ran them as full attention, so drafting collapsed once context grew past ~2048 tokens. PR #41703 additionally makes `--enable-prefix-caching` corruption-immune with DFlash. Net: long-context drafting holds up; short-context (<2048, one window) is unchanged.
 
@@ -212,9 +218,12 @@ The current production image is `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` (= `:
 | #40662 | Unified spec-decode acceptance metrics | DFlash + DynamicProposer + EAGLE all report through the same `/metrics` schema |
 | #38479 | TurboQuant K8V4 backend | KV-cache compression backend (currently guarded out for hybrid models — see #39931 for the unblock) |
 
-- **FlashInfer** — current GB10/Blackwell kernel package.
-- **DFlash sliding-window-attention support (PR #40898)** — runs the drafter's 4 sliding-window layers as proper SWA, so long-context drafting no longer collapses past ~2048 tokens.
-- **Prefix-cache corruption fix for DFlash (PR #41703)** — makes `--enable-prefix-caching` corruption-immune under DFlash.
+- **FlashInfer 0.6.12** — current GB10/Blackwell kernel package (up from 0.6.8.post1).
+- **DFlash high-concurrency block-table fix (port of PR #43982)** — slices the drafter's KV block-table to the unpadded batch, fixing the ≥32-concurrency crash. New in the `:2026-06-18-v0.23.0-dflashfix` image; absent even in the prior `:2026-06-11-pr41703` image.
+- **Triton NVFP4 KV cache (PR #44389)** — the only 4-bit KV path on sm_121a (upstream's is hard-gated to B200). Carried open-upstream.
+- **DFlash sliding-window-attention support (PR #40898)** — runs the drafter's 4 sliding-window layers as proper SWA, so long-context drafting no longer collapses past ~2048 tokens. Carried open-upstream.
+- **Prefix-cache corruption fix for DFlash (PR #41703)** — makes `--enable-prefix-caching` corruption-immune under DFlash. Carried open-upstream.
+- **Runtime patches (TWO):** `cuda_optional_import` + `cudagraph_align`. The old `kv_cache_utils` patch was dropped in 0.23.0.
 - **Packaged profiles** — `gateway`, `production`, and `benchmark` profiles in the unified container scripts so users can choose the correct memory/concurrency shape without hand-editing a long vLLM command.
 - **Measured stock-vs-patched benchmark set** — 6 natural prompt categories x 8 concurrency levels through c=256, with TTFT and TPOT captured, now documented in `README.md`.
 
@@ -225,7 +234,7 @@ If an agent is debugging an issue and finds a stack-overflow / forum thread sayi
 
 ### Why "build" instead of "pip install vllm"
 
-A second-pass agent considering an upgrade should compare to the unified `aeon-vllm-ultimate:latest` image (not stock vLLM). That image is a *fresh source build* with the sm_121a patches plus the DFlash SWA (PR #40898) and prefix-cache (PR #41703) fixes applied. Running `pip install vllm==...` over this image still loses: the patched FlashInfer, the python-level sm_121a patches, and the TurboQuant fork. The image is the deployment artifact — rebuild it, don't `pip install`.
+A second-pass agent considering an upgrade should compare to the unified `aeon-vllm-ultimate:latest` image (not stock vLLM). That image is a *fresh from-source build of vLLM 0.23.0 for sm_121a* with the two runtime patches (`cuda_optional_import` + `cudagraph_align`), the new DFlash high-concurrency block-table fix (port of PR #43982), and the carried open-upstream PRs (#44389 Triton NVFP4 KV, #40898 DFlash SWA, #41703 DFlash prefix-cache-safe). Running `pip install vllm==...` over this image still loses: FlashInfer 0.6.12, the python-level sm_121a patches, the DFlash block-table fix, and the TurboQuant fork. The image is the deployment artifact — rebuild it, don't `pip install`.
 
 ---
 
@@ -323,7 +332,7 @@ Run these in order. If any fail, **don't try to fix the higher-level symptom —
 docker ps --filter "name=vllm-aeon-ultimate" --format "{{.Image}} | {{.Status}}"
 ```
 
-Expected: `ghcr.io/aeon-7/aeon-vllm-ultimate:latest | Up <time> (healthy)` (or the dated tag `:2026-06-11-pr41703`). (The `:2026-06-04-pr44389` rollback tag is acceptable only as an intentional rollback; the old `vllm-aeon-ultimate-dflash:qwen36-*` lineage warrants investigation.)
+Expected: `ghcr.io/aeon-7/aeon-vllm-ultimate:latest | Up <time> (healthy)` (or the dated tag `:2026-06-18-v0.23.0-dflashfix`). (The `:2026-06-11-pr41703` rollback tag is acceptable only as an intentional rollback; the old `vllm-aeon-ultimate-dflash:qwen36-*` lineage warrants investigation.)
 
 ### 2. vLLM accepted the config and booted
 
@@ -481,7 +490,7 @@ If an agent or user proposes "let's just enable Eagle tree spec decode," the ans
 
 ## Quick reference: the canonical command
 
-If you've read this far and just want the production command:
+If you've read this far and just want the production command, use the compose file:
 
 ```bash
 docker compose up -d
@@ -489,6 +498,34 @@ docker compose logs -f vllm
 ```
 
 That runs [`docker-compose.yml`](docker-compose.yml) which is the single source of truth for production config. **If you find yourself crafting a custom `vllm serve` command line, you're probably about to undo something in the DO NOT UNDO list.** Use the compose file unless you have a specific reason not to and have reviewed this entire document.
+
+For a one-shot `docker run` that matches the [comprehensive quickstart in README.md](README.md#quickstart-dgx-spark--gb10--copy-paste) (pull container + model + drafter, then serve) — same vetted DGX Spark flags:
+
+```bash
+docker pull ghcr.io/aeon-7/aeon-vllm-ultimate:latest
+huggingface-cli download AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS --local-dir ./aeon-model
+huggingface-cli download z-lab/Qwen3.6-27B-DFlash --local-dir ./aeon-drafter   # DFlash drafter — pull FRESH
+
+docker run --gpus all --ipc host --network host \
+  -v ./aeon-model:/model:ro -v ./aeon-drafter:/drafter:ro \
+  --entrypoint vllm ghcr.io/aeon-7/aeon-vllm-ultimate:latest \
+  serve /model \
+  --quantization modelopt \
+  --mamba-cache-dtype float16 \
+  --mamba-block-size 256 \
+  --reasoning-parser qwen3 \
+  --tool-call-parser qwen3_coder \
+  --enable-auto-tool-choice \
+  --limit-mm-per-prompt '{"image":4,"video":2}' \
+  --mm-encoder-tp-mode data \
+  --gpu-memory-utilization 0.85 \
+  --enable-chunked-prefill \
+  --enable-prefix-caching \
+  --trust-remote-code \
+  --speculative-config '{"method":"dflash","model":"/drafter","num_speculative_tokens":12}'
+```
+
+The ENTRYPOINT is `/bin/bash`, so `docker run` must pass `--entrypoint vllm` then `serve ...`. `--gpu-memory-utilization 0.85` is the LLM-only production cap; drop to 0.75 when ASR/TTS/embedding side services share the Spark. Never exceed 0.88 on Spark unified memory. Prefix caching is corruption-immune under DFlash on this image (PR #41703); leave it off (`--no-enable-prefix-caching`) only for DDTree research modes still stabilizing branch-state replay.
 
 ---
 

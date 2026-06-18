@@ -20,6 +20,42 @@
 
 A **fully uncensored, capability-enhanced** abliteration of [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B), produced over **72 hours of continuous research** drawing on hundreds of parallel AI research agents, the industry's best published methodologies, custom in-house techniques, and yet-unreleased pre-public branches of next-generation abliteration software.
 
+## Quickstart (DGX Spark / GB10) — copy-paste
+
+One block: pull the container, pull this model (fresh, the `-Multimodal-NVFP4-MTP-XS` body — see [Model Variants](#model-variants)), pull the DFlash drafter (fresh), then serve with the vetted DGX Spark flags.
+
+```bash
+# 1) Pull the unified AEON vLLM container (vLLM 0.23.0, sm_121a, DFlash)
+docker pull ghcr.io/aeon-7/aeon-vllm-ultimate:latest
+
+# 2) Pull this model (fresh)
+huggingface-cli download AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS --local-dir ./aeon-model
+
+# 3) Pull the DFlash drafter (fresh — z-lab pushes updates; always re-pull)
+huggingface-cli download z-lab/Qwen3.6-27B-DFlash --local-dir ./aeon-drafter
+
+# 4) Serve (ENTRYPOINT is /bin/bash → pass --entrypoint vllm, then serve ...)
+docker run --gpus all --ipc host --network host \
+  -v ./aeon-model:/model:ro -v ./aeon-drafter:/drafter:ro \
+  --entrypoint vllm ghcr.io/aeon-7/aeon-vllm-ultimate:latest \
+  serve /model \
+  --quantization modelopt \
+  --mamba-cache-dtype float16 \
+  --mamba-block-size 256 \
+  --reasoning-parser qwen3 \
+  --tool-call-parser qwen3_coder \
+  --enable-auto-tool-choice \
+  --limit-mm-per-prompt '{"image":4,"video":2}' \
+  --mm-encoder-tp-mode data \
+  --gpu-memory-utilization 0.85 \
+  --enable-chunked-prefill \
+  --enable-prefix-caching \
+  --trust-remote-code \
+  --speculative-config '{"method":"dflash","model":"/drafter","num_speculative_tokens":12}'
+```
+
+OpenAI-compatible endpoint comes up at `http://localhost:8000/v1`. The DFlash drafter is auto-gated on first download (one-click terms acceptance). For the full step-by-step walkthrough, docker-compose profiles, the A100/H100 BF16 path, and the per-flag rationale, see [QuickStart — DGX Spark](#quickstart--dgx-spark--xs-body--dflash-recommended-winner) and [Configuration reference](#configuration-reference) below.
+
 ## Performance — DGX Spark DFlash vs Raw Baseline
 
 **This is the headline.** On DGX Spark / GB10, the AEON DFlash container turns the default “it runs, but it feels slow” baseline into a usable long-context local agent model.
@@ -193,20 +229,21 @@ All six formats are **the same underlying model**. NVFP4 KL divergence vs BF16 s
 
 ## Table of contents
 
-1. [Performance — DGX Spark DFlash vs Raw Baseline](#performance--dgx-spark-dflash-vs-raw-baseline)
-2. [Model variants](#model-variants)
-3. [What this is](#what-this-is)
-4. [Final stats](#final-stats)
-5. [Hardware compatibility matrix](#hardware-compatibility-matrix)
-6. [QuickStart — DGX Spark](#quickstart--dgx-spark--xs-body--dflash-recommended-winner)
-7. [QuickStart — A100 / H100 (BF16)](#quickstart--a100--h100-bf16)
-8. [In-depth: the abliteration methodology](#in-depth-the-abliteration-methodology)
-9. [In-depth: NVFP4 quantization](#in-depth-nvfp4-quantization)
-10. [Capability enhancement: the lifted "safety tax"](#capability-enhancement-the-lifted-safety-tax)
-11. [Configuration reference](#configuration-reference)
-12. [Responsibility, arbitration, and use](#responsibility-arbitration-and-use)
-13. [Provenance & credits](#provenance--credits)
-14. [License](#license)
+1. [Quickstart (DGX Spark / GB10) — copy-paste](#quickstart-dgx-spark--gb10--copy-paste)
+2. [Performance — DGX Spark DFlash vs Raw Baseline](#performance--dgx-spark-dflash-vs-raw-baseline)
+3. [Model variants](#model-variants)
+4. [What this is](#what-this-is)
+5. [Final stats](#final-stats)
+6. [Hardware compatibility matrix](#hardware-compatibility-matrix)
+7. [QuickStart — DGX Spark](#quickstart--dgx-spark--xs-body--dflash-recommended-winner)
+8. [QuickStart — A100 / H100 (BF16)](#quickstart--a100--h100-bf16)
+9. [In-depth: the abliteration methodology](#in-depth-the-abliteration-methodology)
+10. [In-depth: NVFP4 quantization](#in-depth-nvfp4-quantization)
+11. [Capability enhancement: the lifted "safety tax"](#capability-enhancement-the-lifted-safety-tax)
+12. [Configuration reference](#configuration-reference)
+13. [Responsibility, arbitration, and use](#responsibility-arbitration-and-use)
+14. [Provenance & credits](#provenance--credits)
+15. [License](#license)
 
 ---
 
