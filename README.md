@@ -47,6 +47,8 @@ docker run --gpus all --ipc host --network host \
   --enable-auto-tool-choice \
   --limit-mm-per-prompt '{"image":4,"video":2}' \
   --mm-encoder-tp-mode data \
+  --max-num-seqs 16 \
+  --max-num-batched-tokens 32768 \
   --gpu-memory-utilization 0.85 \
   --enable-chunked-prefill \
   --enable-prefix-caching \
