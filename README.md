@@ -736,7 +736,7 @@ The model has no opinions of its own. You supply the opinions, the judgment, and
 - **Safety-tax quantification**: Huang et al. 2025 (arXiv:2503.00555); Xie et al. 2026 (DGR, safety-tax mitigation).
 - **NVFP4 specification**: [NVIDIA NVFP4 introduction](https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/).
 - **Quantization tool**: [`llm-compressor`](https://github.com/vllm-project/llm-compressor) by vllm-project.
-- **Patched vLLM container**: [`AEON-7/Qwen3.6-NVFP4-DFlash`](https://github.com/AEON-7/Qwen3.6-NVFP4-DFlash) — source-built vLLM image with sm_121a CUTLASS NVFP4 patches.
+- **Patched vLLM container**: [`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4-DFlash`](https://github.com/AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4-DFlash) — source-built vLLM image with sm_121a CUTLASS NVFP4 patches.
 - **This release's pipeline, configuration, validation, marketing, and packaging**: AEON-7.
 
 ---
