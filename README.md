@@ -48,7 +48,7 @@ docker run --gpus all --ipc host --network host \
   --limit-mm-per-prompt '{"image":4,"video":2}' \
   --mm-encoder-tp-mode data \
   --max-num-seqs 16 \
-  --max-num-batched-tokens 32768 \
+  --max-num-batched-tokens 16384 \
   --gpu-memory-utilization 0.85 \
   --enable-chunked-prefill \
   --enable-prefix-caching \
@@ -352,8 +352,8 @@ hf download z-lab/Qwen3.6-27B-DFlash \
 - **Body**: XS multimodal (`--quantization modelopt`)
 - **Speculative decoding**: DFlash, `num_speculative_tokens: 12`, architecture-matched drafter (`--speculative-config '{"method":"dflash",...}'`), drafter attention backend left at default
 - **GB10-specific env**: `TORCH_CUDA_ARCH_LIST=12.1a`, `ENABLE_NVFP4_SM100=0`, `VLLM_USE_FLASHINFER_SAMPLER=1`, `VLLM_NVFP4_GEMM_BACKEND=flashinfer-cutlass`, `NVIDIA_FORWARD_COMPAT=1`
-- **Default gateway tuning**: `--max-model-len 256000 --max-num-seqs 64 --max-num-batched-tokens 32768 --gpu-memory-utilization 0.75` *(leaves room for ASR/TTS/embedding side services)*
-- **Long-context production tuning**: `--max-model-len 200000 --max-num-seqs 16 --max-num-batched-tokens 32768 --gpu-memory-utilization 0.85` *(higher KV reserve when the LLM is the only major GPU service)*
+- **Default gateway tuning**: `--max-model-len 256000 --max-num-seqs 64 --max-num-batched-tokens 16384 --gpu-memory-utilization 0.75` *(leaves room for ASR/TTS/embedding side services)*
+- **Long-context production tuning**: `--max-model-len 200000 --max-num-seqs 16 --max-num-batched-tokens 16384 --gpu-memory-utilization 0.85` *(higher KV reserve when the LLM is the only major GPU service)*
 - **Multimodal**: `--limit-mm-per-prompt '{"image":4,"video":2}' --mm-encoder-tp-mode data --mm-processor-cache-type shm`
 - **Serving**: 5 aliases (`aeon-ultimate`, `qwen36-ultimate`, `aeon-fast`, `aeon-deep`, `aeon-ultimate-xs`) all routing to the same engine
 
@@ -669,7 +669,7 @@ Wielding an uncensored model is genuinely different from wielding an aligned one
 | (async scheduling) | **enabled (default)** | Async scheduling overlaps scheduler work with GPU work and is part of the default serving profile. Disable only for a deliberate TTFT-only experiment. |
 | `--max-model-len` | `256000` gateway default, `200000` solo LLM production | 256K exposes almost the full trained context for agent gateways. Use 200K when the LLM is the only major GPU service and you want more full-context KV safety. |
 | `--max-num-seqs` | `64` gateway default, `16` solo full-context production | 64 gives agentic gateways room for one large working chat plus many short-lived subagents. Drop to 16 when you expect many sequences near the full 200K context window. |
-| `--max-num-batched-tokens` | `32768` | Prefill budget. This is the practical ceiling on Spark; above 32K, compile coverage and unified-memory pressure get worse. |
+| `--max-num-batched-tokens` | `16384` | Prefill **chunk** budget — chunked prefill preserves full 256k context. **16384 is the recommended default**: it frees ~3 GiB of load-time activation vs 32768, enough for the 21 GB XS body to fit a 32 GB card (RTX 5090) where 32768 can OOM at startup, with negligible throughput cost (validated 2026-06-19: 256k boots at gpu-util 0.85, ~2× concurrency @ 262k-token requests). 32768 is safe on ample-VRAM cards for marginally better long-prefill throughput at high concurrency, and is the compile-range ceiling — above 32K compile coverage + unified-memory pressure worsen. |
 | `--gpu-memory-utilization` | `0.75` gateway default, `0.85` solo LLM production | Use 0.75 when ASR, TTS, embeddings, ComfyUI, or other GPU services share the Spark. 0.85 is the long-context LLM-only cap. **Do not exceed 0.88 on DGX Spark** — unified memory thrashes above that. |
 | `--enable-chunked-prefill` | on | Required for long-context workloads to avoid prefill OOM. |
 | `--enable-prefix-caching` / `--no-enable-prefix-caching` | workload-dependent | For pure DFlash gateway serving, prefix caching can be a major TTFT win when many agents share the same stable system/persona/skills/tool prefix. In our repeated-prefix probe, a 37,837-token shared prefix dropped from ~26 s uncached TTFT to ~0.7 s cached follow-ups. For DDTree research modes, keep prefix caching off until branch-state replay and accepted-branch commit are quality-stable. |
