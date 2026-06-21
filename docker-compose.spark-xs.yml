@@ -94,9 +94,9 @@ services:
     # shell anyway). Do NOT write `image: ... command: [vllm, serve, ...]` against this
     # image — that resolves to `bash vllm serve` and fails. For a plain `docker run`,
     # the equivalent is `--entrypoint vllm` then `serve ...`.
+    entrypoint: ["/usr/bin/bash"]
     command:
-      - bash
-      - -c
+      - -lc
       - |
         exec vllm serve /models/xs \
           --served-model-name aeon-ultimate qwen36-ultimate aeon-fast aeon-deep aeon-ultimate-xs \
@@ -112,7 +112,9 @@ services:
           --max-num-batched-tokens 32768 \
           --gpu-memory-utilization 0.75 \
           --enable-chunked-prefill \
-          --no-enable-prefix-caching \
+          # Required when --mamba-block-size is set; vLLM rejects mamba_block_size
+          # unless prefix caching is enabled, so --no-enable-prefix-caching  errors
+          --enable-prefix-caching \
           --generation-config vllm \
           --load-format safetensors \
           --trust-remote-code \
