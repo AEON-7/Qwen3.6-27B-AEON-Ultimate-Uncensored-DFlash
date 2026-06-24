@@ -32,7 +32,8 @@ If your task is on RTX PRO 6000, **do not apply this file's flags wholesale** �
 | Hardware target | DGX Spark (NVIDIA GB10, sm_121a, 128 GB unified) | Don't apply Hopper / Ada tuning advice |
 | **Recommended body** | **`AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS`** (modelopt format, ~21 GB) — **winning Spark config** | Alternate body: `AEON-7/.../-NVFP4` (compressed-tensors, ~26 GB, simpler but slower). The XS+DFlash path is the benchmarked Spark winner; on the new container its long-context (~9k) draft acceptance is **45%** vs **19.7%** on the pre-fix image (2.3x). Short-context throughput is comparable to the prior image. |
 | Quantization | NVFP4 via patched CUTLASS path | **Don't force Marlin** — the patched CUTLASS path is faster than Marlin on this hardware. Use `--quantization modelopt` with the XS body, `--quantization compressed-tensors` with the regular `-NVFP4` body. |
-| Spec decode | **DFlash `num_speculative_tokens: 12`** via `z-lab/Qwen3.6-27B-DFlash` drafter | Don't disable; don't switch to ngram/EAGLE. n=12 is the validated production default (n=8–15 sweep: tied short-context, best long-context acceptance). Drafter backend = **default** (do NOT add `attention_backend` to the spec-config; the default works for Qwen3.6 on this image). **DO NOT use `--speculative-config '{"method":"qwen3_5_mtp",...}'` on Spark** unless you are deliberately running an ablation. |
+| Spec decode | **DFlash `num_speculative_tokens: 10`** via `z-lab/Qwen3.6-27B-DFlash` drafter | Don't disable; don't switch to ngram/EAGLE. n=10 is the validated default (n=8/10/12/15 sweep on `aeon-vllm-ultimate:latest`: n=10 gave the best aggregate throughput + DFlash acceptance at parity single-stream; the old 12-token setting wins only at very long context). Drafter backend = **default** (do NOT add `attention_backend` to the spec-config; the default works for Qwen3.6 on this image). **DO NOT use `--speculative-config '{"method":"qwen3_5_mtp",...}'` on Spark** unless you are deliberately running an ablation. |
+| Mamba state | **`--mamba-cache-dtype float32`**, **no `--mamba-block-size`** (use the default) | Verified: float32 recurrent state is more precise + slightly higher DFlash acceptance than float16; omitting `--mamba-block-size` (vs forcing 256) lowers single-stream TTFT ~230→140 ms with identical decode. |
 | GPU memory util cap | **0.75 gateway default**, **0.85 LLM-only production**, never above 0.88 | Unified memory thrashes above 0.88 — this is not a typo |
 | Max model len | `256000` gateway default, `200000` LLM-only production | Set with `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` |
 | Max num seqs | **64 gateway default**, **16 LLM-only full-context production** | 64 supports one large working chat plus many short subagents; 16 is safer when many sequences approach full context |
@@ -180,7 +181,7 @@ These all appear in [`docker-compose.yml`](docker-compose.yml). Each line below 
 | (async scheduling) | **enabled (default)** | Async scheduling overlaps scheduler work with GPU work and is part of the production profile. | "Add `--no-async-scheduling` by default" — don't do this unless you are running a targeted TTFT-only experiment. |
 | `--max-model-len` | `256000` gateway, `200000` LLM-only production | 256K exposes nearly the full trained context for agent gateways. 200K is the safer solo-LLM profile when many sequences may be long. | "Always use one universal max len" — wrong on unified memory; choose the profile |
 | `--max-num-seqs` | `64` gateway, `16` LLM-only production | DFlash drafter budget plus side-service headroom. See "Don't undo #8". | "More concurrent seqs = more throughput" — true only until queueing and unified-memory pressure dominate |
-| `--max-num-batched-tokens` | `32768` | Prefill budget and practical Spark ceiling for this stack. | "Stock vLLM uses 65536" — OOMs or falls off the optimized path on GB10 unified memory under concurrent long-context |
+| `--max-num-batched-tokens` | `16384` | Prefill chunk budget — validated default (frees ~3 GiB vs 32768, throughput-neutral). 32768 is safe on the Spark but not the default. | "Stock vLLM uses 65536" — OOMs or falls off the optimized path on GB10 unified memory under concurrent long-context |
 | `--gpu-memory-utilization` | `0.75` gateway, `0.85` LLM-only production | Unified memory cap. See "Don't undo #4". | "0.95 is the recommended default" — for dedicated VRAM only |
 | `--enable-chunked-prefill` | flag | Required for long-context workloads to avoid prefill OOM. | None |
 | `--no-enable-prefix-caching` | flag | Required for DFlash/DDTree correctness. Keep vLLM prefix caching off so speculative verifier KV and GDN recurrent state are not reused across incompatible branches. | "Enable prefix caching for multi-turn agents" — risky with DFlash/DDTree; use gateway memory and retrieval strategy instead |
@@ -193,7 +194,7 @@ These all appear in [`docker-compose.yml`](docker-compose.yml). Each line below 
 | `--limit-mm-per-prompt '{"image":4,"video":2}'` | recommended | Hard caps on multimodal inputs per request. Prevents pathological MM overload. | None |
 | `--mm-encoder-tp-mode data` | required | Vision encoder TP strategy. | "Use `weight` mode" — incompatible with this model's vision tower layout |
 | `--mm-processor-cache-type shm` | recommended | Shared-memory mm processor cache. | None |
-| `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":12}'` | required for spec decode | DFlash spec-decode at `num_speculative_tokens: 12` (validated production default; the n=8–15 sweep found n=10–12 tied short-context, n=12 best long-context acceptance). Drafter backend = **default** — do NOT add `attention_backend` to this spec-config; the default works for Qwen3.6 on this image. This is the Spark recipe benchmarked in README.md. | "Use EAGLE-3 / Medusa / ngram for better spec decode" — different drafter requirements; DFlash is the matching public drafter checkpoint for Qwen3.6-27B |
+| `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":10}'` | required for spec decode | DFlash spec-decode at `num_speculative_tokens: 10` (validated default; the n=8/10/12/15 sweep found n=10 best for the voice/chat workload — top aggregate throughput + acceptance at parity single-stream; the old 12-token setting wins only at very long context). Drafter backend = **default** — do NOT add `attention_backend` to this spec-config; the default works for Qwen3.6 on this image. This is the Spark recipe benchmarked in README.md. | "Use EAGLE-3 / Medusa / ngram for better spec decode" — different drafter requirements; DFlash is the matching public drafter checkpoint for Qwen3.6-27B |
 | `--served-model-name aeon-ultimate qwen36-ultimate aeon-fast aeon-deep` | flag | Four aliases for the same engine. Don't reduce — downstream tools assume these names exist. | None |
 
 ---
@@ -268,11 +269,11 @@ If the body is the XS variant and you set `--quantization compressed-tensors`, y
 
 **Symptom:** Agent inspects the XS body's safetensors, sees `mtp.*` tensors, and concludes "obviously use the MTP spec method."
 
-**What actually happens:** On DGX Spark, the current documented path is external DFlash with `num_speculative_tokens: 12`. The MTP head sits in the safetensors for compatibility with dedicated-VRAM Blackwell workflows, but it is not the Spark serving method.
+**What actually happens:** On DGX Spark, the current documented path is external DFlash with `num_speculative_tokens: 10`. The MTP head sits in the safetensors for compatibility with dedicated-VRAM Blackwell workflows, but it is not the Spark serving method.
 
 **Diagnostic:** The serve command says `method:"qwen3_5_mtp"` instead of `method:"dflash"`, or the DFlash drafter model is not mounted.
 
-**Fix:** On DGX Spark, **always** use `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":12}'`. The MTP method is correct for **dedicated-VRAM Blackwell** (RTX 5090, RTX PRO 6000, B100/B200), not unified memory. See [the hardware-routing section in README.md](README.md#hardware-compatibility-matrix).
+**Fix:** On DGX Spark, **always** use `--speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":10}'`. The MTP method is correct for **dedicated-VRAM Blackwell** (RTX 5090, RTX PRO 6000, B100/B200), not unified memory. See [the hardware-routing section in README.md](README.md#hardware-compatibility-matrix).
 
 ### Failure mode: "Let me disable thinking to make this faster"
 
@@ -511,8 +512,7 @@ docker run --gpus all --ipc host --network host \
   --entrypoint vllm ghcr.io/aeon-7/aeon-vllm-ultimate:latest \
   serve /model \
   --quantization modelopt \
-  --mamba-cache-dtype float16 \
-  --mamba-block-size 256 \
+  --mamba-cache-dtype float32 \
   --reasoning-parser qwen3 \
   --tool-call-parser qwen3_coder \
   --enable-auto-tool-choice \
@@ -522,7 +522,7 @@ docker run --gpus all --ipc host --network host \
   --enable-chunked-prefill \
   --enable-prefix-caching \
   --trust-remote-code \
-  --speculative-config '{"method":"dflash","model":"/drafter","num_speculative_tokens":12}'
+  --speculative-config '{"method":"dflash","model":"/drafter","num_speculative_tokens":10}'
 ```
 
 The ENTRYPOINT is `/bin/bash`, so `docker run` must pass `--entrypoint vllm` then `serve ...`. `--gpu-memory-utilization 0.85` is the LLM-only production cap; drop to 0.75 when ASR/TTS/embedding side services share the Spark. Never exceed 0.88 on Spark unified memory. Prefix caching is corruption-immune under DFlash on this image (PR #41703); leave it off (`--no-enable-prefix-caching`) only for DDTree research modes still stabilizing branch-state replay.

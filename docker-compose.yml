@@ -25,7 +25,7 @@
 #
 # Hardware:    DGX Spark (NVIDIA GB10, 128 GB unified memory, sm_121a)
 #
-# Pipeline:    NVFP4 main model + DFlash speculative decoding (n=12) via architecture-
+# Pipeline:    NVFP4 main model + DFlash speculative decoding (n=10) via architecture-
 #              matched drafter. Spec-decode acceptance averages high enough on this
 #              dense 27B that DFlash is the recommended production path.
 #
@@ -94,7 +94,7 @@ services:
     volumes:
       # Main NVFP4 weights (~26 GB)
       - ./models/aeon-ultimate-nvfp4:/models/aeon-ultimate
-      # DFlash drafter (~1 GB) for n=12 speculative decoding
+      # DFlash drafter (~1 GB) for n=10 speculative decoding
       - ./models/dflash-drafter:/models/dflash-drafter
 
     # entrypoint is `vllm` (above); command starts at the `serve` subcommand.
@@ -118,12 +118,14 @@ services:
       - compressed-tensors
       - --kv-cache-dtype
       - auto
+      - --mamba-cache-dtype
+      - float32
       - --max-model-len
       - "200000"
       - --max-num-seqs
       - "16"
       - --max-num-batched-tokens
-      - "32768"
+      - "16384"
       - --gpu-memory-utilization
       - "0.85"
       - --enable-chunked-prefill
@@ -144,18 +146,21 @@ services:
       - data
       - --mm-processor-cache-type
       - shm
-      # DFlash speculative decoding: n=12, DEFAULT drafter attention backend.
+      # DFlash speculative decoding: n=10, DEFAULT drafter attention backend.
       # Do NOT add "attention_backend" to the spec-config — the default works for
       # Qwen3.6 on aeon-vllm-ultimate:latest (unlike Gemma, which needed flash_attn).
       # Do NOT set --kv-cache-dtype to anything but BF16/auto: the non-causal DFlash
       # drafter requires BF16 KV.
       - --speculative-config
-      - '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":12}'
+      - '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":10}'
 
     # Notes on configuration choices:
-    #   - DFlash n=12 — validated production default. An n=8-15 sweep found n=10-12
-    #     statistically tied at short context, with n=12 giving the best long-context
-    #     acceptance. The architecture-matched drafter (z-lab/Qwen3.6-27B-DFlash) keeps
+    #   - DFlash n=10 — validated default. An n=8/10/12/15 sweep on aeon-vllm-ultimate:latest
+    #     found n=10 best for the voice/chat workload (top aggregate throughput + acceptance
+    #     at parity single-stream); the old 12-token setting wins only at very long context.
+    #   - --mamba-cache-dtype float32 (more precise recurrent state, slightly higher acceptance
+    #     than float16) + no --mamba-block-size (default lowers TTFT ~230->140ms vs 256).
+    #     The architecture-matched drafter (z-lab/Qwen3.6-27B-DFlash) keeps
     #     spec-decode acceptance well above the break-even point where the drafter
     #     itself becomes overhead.
     #   - Drafter attention backend is left at DEFAULT (no attention_backend in the
@@ -164,7 +169,7 @@ services:
     #     drafting holds up; short-context (<2048, single window) is unchanged.
     #   - DynamicProposer (per-seq dynamic k) was attempted but Speculators v0.3 has
     #     a pydantic-incompatibility bug at import on pydantic 2.12. vLLM's native
-    #     --speculative-config covers DFlash fine, so plain DFlash n=12 is the path.
+    #     --speculative-config covers DFlash fine, so plain DFlash n=10 is the path.
     #   - TurboQuant K8V4 KV-cache compression (3.76×) was attempted but raises
     #     "TurboQuant KV cache is not supported for hybrid (attention + Mamba)
     #     models" — a deliberate guard in the vLLM integration code, not a kernel

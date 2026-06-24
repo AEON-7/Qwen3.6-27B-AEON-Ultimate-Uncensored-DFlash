@@ -2,12 +2,12 @@
 #
 # Current recommendation:
 #   image ghcr.io/aeon-7/aeon-vllm-ultimate:latest
-#   XS multimodal body + DFlash n=12 + FlashInfer 0.6.11 + patched CUTLASS NVFP4
+#   XS multimodal body + DFlash n=10 + FlashInfer 0.6.11 + patched CUTLASS NVFP4
 #
-# Headline benchmark signal on DGX Spark (aeon-vllm-ultimate:latest, DFlash n=12):
+# Headline benchmark signal on DGX Spark (aeon-vllm-ultimate:latest, DFlash n=10):
 #   Lead with ACCEPTANCE (stable across runs), not single-sample tok/s.
 #   Long-context (~9k-token) draft acceptance: NEW 45.0% vs pre-fix image 19.7% = 2.3×.
-#   Short-context c=1 acceptance by category (new, n=12, approximate):
+#   Short-context c=1 acceptance by category (new, n=10, approximate):
 #     Math ~50%, Reasoning ~50%, Extraction ~40%, Coding ~38%, Natural ~25%, Prose ~18%.
 #   Short-context throughput is statistically UNCHANGED vs the prior image (the drafter's
 #   sliding-window attention only engages past 2048 tokens); the win is specifically
@@ -22,7 +22,7 @@
 #   up; short-context (<2048, one window) is unchanged.
 #
 # The XS body has a grafted MTP head, but the Spark recipe intentionally uses
-# external DFlash n=12. Keep this compose focused on the benchmarked path:
+# external DFlash n=10. Keep this compose focused on the benchmarked path:
 # XS body, modelopt quantization, CUTLASS NVFP4, CUDA graphs, Qwen3 reasoning,
 # Qwen3-Coder tool calls, and the DFlash drafter.
 #
@@ -105,11 +105,10 @@ services:
           --dtype auto \
           --quantization modelopt \
           --kv-cache-dtype auto \
-          --mamba-cache-dtype float16 \
-          --mamba-block-size 256 \
+          --mamba-cache-dtype float32 \
           --max-model-len 256000 \
           --max-num-seqs 64 \
-          --max-num-batched-tokens 32768 \
+          --max-num-batched-tokens 16384 \
           --gpu-memory-utilization 0.75 \
           --enable-chunked-prefill \
           --no-enable-prefix-caching \
@@ -124,16 +123,17 @@ services:
           --mm-encoder-tp-mode data \
           --mm-processor-cache-type shm \
           --mm-shm-cache-max-object-size-mb 256 \
-          --speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":12}'
+          --speculative-config '{"method":"dflash","model":"/models/dflash-drafter","num_speculative_tokens":10}'
         # Notes on configuration choices:
         #   - --quantization modelopt — required for the XS body. The XS body ships in
         #     modelopt format (NVFP4 element + FP8 per-block + FP32 per-tensor scales).
         #     The previous regular NVFP4 body was compressed-tensors format; modelopt is
         #     the format vLLM serves through this code path.
-        #   - --speculative-config '{"method":"dflash",...,"num_speculative_tokens":12}'
-        #     — DFlash with the external z-lab drafter. n=12 is the validated production
-        #     default: the n=8–15 sweep found n=10–12 statistically tied at short context
-        #     and n=12 best on long-context acceptance. The drafter backend is the DEFAULT
+        #   - --speculative-config '{"method":"dflash",...,"num_speculative_tokens":10}'
+        #     — DFlash with the external z-lab drafter. n=10 is the validated default:
+        #     the n=8/10/12/15 sweep found n=10 best for the voice/chat workload (top
+        #     aggregate throughput + acceptance at parity single-stream); the old 12-token
+        #     setting wins only at very long context. The drafter backend is the DEFAULT
         #     (do NOT add "attention_backend" to the spec-config — the default works for
         #     Qwen3.6 on this image, unlike Gemma which needed flash_attn). The XS body has
         #     a grafted MTP head in its safetensors but it is *not* used here; don't switch
@@ -144,7 +144,7 @@ services:
         #     embedding, or other GPU services share the Spark. If this is the only
         #     major GPU workload, 0.85 is the long-context production cap; 0.88+ can
         #     thrash unified memory. (RTX PRO 6000 has more headroom — it caps at 0.94.)
-        #   - --max-num-batched-tokens 32768 is the ceiling. vLLM's inductor compile-range
+        #   - --max-num-batched-tokens 16384 is the ceiling. vLLM's inductor compile-range
         #     endpoint is [32768], so above 32k prefill falls back to eager mode.
 
     # GPU exposure — required on hosts where Docker's default-runtime is not 'nvidia'.
