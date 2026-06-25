@@ -440,9 +440,52 @@ Keep `--no-enable-prefix-caching` **only for DDTree research** modes, where bran
 
 Validation on RTX PRO 6000 (community report) observed 0 % cache hit on turns 1 and 2 of a multi-turn agent workload, then 61.9 % hit on turn 3 — even with identical system prompts and accumulating shared context. An identical-prompt smoke test (two repeats of a 10K-token prompt) also reported 0 hits on the second request.
 
-This appears to be a real interaction between block-boundary alignment and how `mamba_cache_mode=align` lazily snapshots GDN state. Treat those old measurements as historical only; current DFlash/DDTree deployments leave prefix caching off for correctness.
+This is a real interaction between block-boundary alignment and how `mamba_cache_mode=align` lazily snapshots GDN state. Prefix caching is now **ON** in production (lossless under DFlash via PR #41703); the occasional turn-1/2 "0 % hit" is the **align-mode GDN prefix-cliff** — a single missing GDN checkpoint can veto the entire attention-prefix match (vLLM #45238), producing a silent full cold re-prefill. The deep-context canary (`deepctx_canary.py`, below) watches for exactly this signature. Only **DDTree research** modes leave prefix caching off.
 
 If you're running a benchmark that expects cache hits on turn 2, you may need to extend it to 3+ turns to see the expected behavior.
+
+---
+
+## Deep-context / long coding-session performance playbook
+
+The slowdown agents feel "deep in a session" is almost never the model degrading — it's three separable effects. Diagnosed + measured on GB10 (single-stream, thinking ON):
+
+| Effect | What's actually happening | Lever |
+|---|---|---|
+| **Re-prefill** (the big one) | Each turn re-reads the whole growing context. Cold: ~82 s @64k, ~208 s @128k. | **Prefix caching** absorbs it — warm hit is ~1.4 s @64k (≈58×). Already ON; measured 89.6 % hit rate. |
+| **Decode decay** | The 16 full-attn O(N) layers read more KV per step as context grows: ~28.6 tok/s @2k → 17.3 @128k (only ~40 % over 2k→128k, because 48/64 layers are O(1) GatedDeltaNet). | Structural — keep effective context shallow (compaction). |
+| **Generation volume** | Thinking emits a long hidden trace (~2700 chars/turn) before the answer; at 17 tok/s that's 30 s–3 min/turn. | **Do NOT cap thinking** (operator decision: a full thought beats a truncated one). Instead don't *accumulate* it (below). |
+
+**Because thinking stays ON+unlimited, the only two physical levers are: (1) protect the prefix cache, (2) slow the rate the *effective* context deepens — never by touching the current turn's thinking.**
+
+### Lever 1 — don't accumulate prior-turn thinking (verified)
+The served chat template **evicts** a prior assistant turn's reasoning. Confirmed by a `prompt_tokens` A/B at `:8000` (3-message convo, same answer, varying how the prior assistant turn carried its reasoning):
+
+| Prior assistant turn carried reasoning as… | prompt_tokens | Result |
+|---|---|---|
+| answer only (baseline) | 47 | — |
+| inline `<think>…</think>` in `content` | 47 | **evicted** ✓ |
+| separate `reasoning` field | 47 | **evicted** ✓ |
+| reasoning flattened into `content` as bare prose | 1248 | **KEPT** ✗ (un-taggable → persists forever) |
+
+So the **one client contract that matters**: when you re-send history, prior assistant turns must carry reasoning as a `reasoning` field, or inline `<think>…</think>`, or be answer-only — **never flatten the reasoning into `content` as plain prose.** Most OpenAI-compatible clients send `content` only and are fine. (The OpenClaw gateway is verified safe: it strips outgoing messages to role+content and caps history at `recentTurnsPreserve: 12`.)
+
+### Lever 2 — compact APPEND-ONLY (never re-base the prefix)
+Once thinking is evicted, the dominant deep-session sink is accumulated **tool output** (file reads, grep dumps, logs). Trim it — but the hard rule on this stack is:
+
+> **Compaction must be append-only. Never edit, reorder, or drop-from-the-front of the cached prefix.** Any change to the prefix invalidates the 89.6 % prefix-cache hit and forces an 82–208 s cold re-prefill — a net loss far bigger than what you saved.
+
+Concretely: cap each tool message to head+tail; replace fully-superseded file reads with a one-line stub; at ~48–64k summarize *old* turns by **appending** a "state so far" block and dropping from the tail-side — keep the system prompt + earliest stable context frozen. (Note: a naïve sliding-window-of-N — like the chat gateway's `recentTurnsPreserve` — re-bases the prefix every turn and *defeats* prefix caching. That's fine for cheap short-turn chat; it is **wrong for a deep coding session.**)
+
+### Monitoring — the deep-context canary
+`/home/albert/deepctx_canary.py` (Spark cron, every 1 min → `deepctx_canary.log`) scrapes `:8000/metrics` and flags the three silent slowdowns:
+- **prefix-cliff** — a real prefill window (≥2000 blocks) at ~0 % hit = the align-mode GDN veto (#45238) → watch for a 200 s-tail TTFT.
+- **acceptance decay** — windowed accepted/draft < 2.0 (baseline ~4.37 of n=10) = DFlash stopped paying off (~6× slowdown); `RESTART RECOMMENDED` (auto-heal is idle-gated behind a flag so it never drops a live turn).
+- **preemption** — `vllm:num_preemptions_total` must stay 0 single-stream (a preempt = full RECOMPUTE re-prefill).
+
+### Levers that are NOT available (don't burn time on them)
+- **FP8 / NVFP4 KV cache** — the one bandwidth knob that would make each token cheaper at depth. **Dead under DFlash.** Source-verified: the DFlash drafter runs *non-causal* (`v1/spec_decode/dflash.py:77` `dflash_causal=config.get("causal",False)` → `:118` `use_non_causal=not dflash_causal` → `:448` asserts `causal is False`). Non-causal selects only FA2/FLEX, neither of which supports FP8 KV → BF16 KV is forced. The multimodal vision tower forces it independently, so stripping vision wouldn't help either. BF16 KV is mandatory; KV-bandwidth is not a lever here.
+- **Higher DFlash `n` at depth** — *plausible but unproven.* At 128k the target forward dominates and DFlash verifies all `n` drafts in one pass, so a larger `n` could amortize it. But per-position acceptance decays steeply (pos0 ~84 % → pos9 ~24 %), and `n` is hard-capped at the drafter's `block_size=16`. Measure the **depth-resolved** per-position curve at real 64k/128k prefixes before shipping `n` > 10 — don't assume the shallow-context n=10 optimum inverts.
 
 ---
 
