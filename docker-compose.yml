@@ -129,7 +129,7 @@ services:
       - --gpu-memory-utilization
       - "0.85"
       - --enable-chunked-prefill
-      - --no-enable-prefix-caching
+      - --enable-prefix-caching
       - --load-format
       - safetensors
       - --trust-remote-code

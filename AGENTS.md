@@ -184,7 +184,7 @@ These all appear in [`docker-compose.yml`](docker-compose.yml). Each line below 
 | `--max-num-batched-tokens` | `16384` | Prefill chunk budget — validated default (frees ~3 GiB vs 32768, throughput-neutral). 32768 is safe on the Spark but not the default. | "Stock vLLM uses 65536" — OOMs or falls off the optimized path on GB10 unified memory under concurrent long-context |
 | `--gpu-memory-utilization` | `0.75` gateway, `0.85` LLM-only production | Unified memory cap. See "Don't undo #4". | "0.95 is the recommended default" — for dedicated VRAM only |
 | `--enable-chunked-prefill` | flag | Required for long-context workloads to avoid prefill OOM. | None |
-| `--no-enable-prefix-caching` | flag | Required for DFlash/DDTree correctness. Keep vLLM prefix caching off so speculative verifier KV and GDN recurrent state are not reused across incompatible branches. | "Enable prefix caching for multi-turn agents" — risky with DFlash/DDTree; use gateway memory and retrieval strategy instead |
+| `--enable-prefix-caching` | recommended for agent / gateway serving | **Safe with DFlash on this image** — PR #41703 makes it corruption-immune; verified lossless (cold vs warm output byte-identical at 8k & 32k, greedy). Big TTFT win for multi-turn agents: re-prefill of a stable growing prefix becomes a cache hit (measured 64k: ~81 s → ~1.4 s, ~58×). Auto-promotes `mamba_cache_mode=align` for `Qwen3_5ForConditionalGeneration` — correct with DFlash (PR #40454 + #41703). Keep **off** (`--no-enable-prefix-caching`) **only for DDTree research** modes (branch-state replay still stabilizing). | "Prefix caching is risky with DFlash" — was true pre-PR-#41703; now corruption-immune |
 | `--load-format safetensors` | required | NVFP4 weights ship as safetensors. | None |
 | `--trust-remote-code` | required | Qwen 3.6 uses custom modeling code. | None |
 | `--enable-auto-tool-choice` | flag | Enables OpenAI-compatible tool calling. | None |
@@ -214,7 +214,7 @@ The current production image is `ghcr.io/aeon-7/aeon-vllm-ultimate:latest` (= `:
 | PR | Title | What it fixes |
 |---|---|---|
 | #40092 | SWA backend assert fix | Sliding-window attention assertion that fired on Qwen3.6's specific layer config |
-| #40454 | Default-align mamba cache w/ spec-decode | Hybrid GDN + spec-decode cache alignment bug. This patch remains useful context, but AEON DFlash/DDTree launch profiles now force `--no-enable-prefix-caching` because prefix-cache reuse can conflict with speculative verifier state. |
+| #40454 | Default-align mamba cache w/ spec-decode | Hybrid GDN + spec-decode cache alignment fix. Together with PR #41703 it makes `--enable-prefix-caching` corruption-immune under DFlash (verified lossless), so production DFlash profiles **enable** prefix caching; only DDTree research profiles keep it off. |
 | #40191 | `ENABLE_NVFP4_SM100=0` guard | Allows sm_121a-only builds to import without SM100-only `mxfp4_experts_quant` symbols |
 | #40662 | Unified spec-decode acceptance metrics | DFlash + DynamicProposer + EAGLE all report through the same `/metrics` schema |
 | #38479 | TurboQuant K8V4 backend | KV-cache compression backend (currently guarded out for hybrid models — see #39931 for the unblock) |
@@ -430,11 +430,11 @@ msg = response["choices"][0]["message"]
 full_output = (msg.get("reasoning") or "") + (msg.get("content") or "")
 ```
 
-### Prefix caching stays off with DFlash/DDTree
+### Prefix caching: ON for production DFlash, off only for DDTree research
 
-vLLM auto-promotes `mamba_cache_mode` to `align` for `Qwen3_5ForConditionalGeneration` whenever `--enable-prefix-caching` is on. Do not enable that path for the AEON DFlash or DDTree profiles. The prefix cache and Mamba/GDN align cache were designed for deterministic shared-prefix reuse, while DFlash/DDTree introduce verifier windows, rejected draft rows, and branch-local recurrent state.
+vLLM auto-promotes `mamba_cache_mode` to `align` for `Qwen3_5ForConditionalGeneration` whenever `--enable-prefix-caching` is on. **With DFlash this is correct and lossless on this image** — PR #40454 aligned the Mamba/GDN cache with spec-decode and PR #41703 made prefix-cache reuse corruption-immune under DFlash. Verified: cold vs warm (cache-hit) output is byte-identical at 8k and 32k prefixes (greedy). So the production DFlash profiles **enable** prefix caching — it's a large TTFT win for multi-turn agents (a stable growing prefix re-prefills as a cache hit; measured 64k: ~81 s → ~1.4 s). 
 
-The launch scripts therefore force `--no-enable-prefix-caching`. If someone sets `ENABLE_PREFIX_CACHING=1`, the script should warn and still run with prefix caching disabled.
+Keep `--no-enable-prefix-caching` **only for DDTree research** modes, where branch-state replay, rejected-draft rows, and branch-local recurrent state are still stabilizing and could conflict with deterministic shared-prefix reuse.
 
 ### Prefix cache hit rate is empirically inconsistent on early turns
 
@@ -469,7 +469,7 @@ These are tempting but **either don't help or actively break things** for this s
 | EAGLE-2 / EAGLE-3 dynamic tree spec decode | Requires a different drafter (Eagle head, not DFlash). No public Qwen3.6-27B Eagle drafter exists. |
 | Medusa heads | No Qwen3.6-27B Medusa heads published. Static-tree only in vLLM, doesn't help our hybrid GDN layers. |
 | DDTree (dynamic-tree on top of DFlash) | Ongoing R&D — see [the GDN compatibility issue](#hybrid-attention--ddtree-status). Not in any public vLLM release. |
-| Enabling prefix caching with DFlash/DDTree | Can mix reused KV/GDN recurrent state with speculative verifier or branch state. Keep `--no-enable-prefix-caching`. |
+| Leaving prefix caching **off** for a production DFlash agent | Re-prefills the entire growing context every turn → massive TTFT growth at depth (64k ≈ 81 s/turn). PR #41703 makes `--enable-prefix-caching` corruption-immune under DFlash (verified lossless) — enable it for agents. Off is only correct for DDTree research modes. |
 | Aggressive CUDA graphs (`--num-cudagraphs N`) | Already tuned in the image. Manual override likely regresses. |
 | Tensor parallelism (`--tensor-parallel-size 2+`) | DGX Spark is single-GPU. TP > 1 is meaningless. |
 | Pipeline parallelism | Same. |
