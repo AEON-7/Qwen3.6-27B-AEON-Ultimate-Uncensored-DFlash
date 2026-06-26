@@ -89,14 +89,17 @@ services:
       # DFlash drafter (~3.46 GB)
       - ./models/dflash-drafter:/models/dflash-drafter
 
-    # The aeon-vllm-ultimate:latest image ENTRYPOINT is /bin/bash, so we invoke
-    # `vllm serve` explicitly through `bash -c` here (this multi-line recipe needs a
-    # shell anyway). Do NOT write `image: ... command: [vllm, serve, ...]` against this
-    # image — that resolves to `bash vllm serve` and fails. For a plain `docker run`,
-    # the equivalent is `--entrypoint vllm` then `serve ...`.
+    # The aeon-vllm-ultimate:latest image ENTRYPOINT is exec-form ["/bin/bash"]. Because
+    # Docker CONCATENATES entrypoint + command, you must NOT also start `command:` with
+    # `bash`: `command: [bash, -c, ...]` resolves to `/bin/bash bash -c ...`, where bash
+    # treats the second `bash` as a script file and dies with
+    # `/usr/bin/bash: /usr/bin/bash: cannot execute binary file` — even on a correct
+    # aarch64 DGX Spark (this is NOT an arch mismatch; see issue #12). Fix: override the
+    # entrypoint to `bash -lc` and pass ONLY the serve script as the command.
+    # (Plain `docker run`: `--entrypoint /bin/bash <img> -lc "exec vllm serve ..."`,
+    #  or `--entrypoint vllm <img> serve ...`.)
+    entrypoint: ["/bin/bash", "-lc"]
     command:
-      - bash
-      - -c
       - |
         exec vllm serve /models/xs \
           --served-model-name aeon-ultimate qwen36-ultimate aeon-fast aeon-deep aeon-ultimate-xs \
