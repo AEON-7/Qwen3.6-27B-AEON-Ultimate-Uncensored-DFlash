@@ -109,7 +109,7 @@ services:
           --max-model-len 256000 \
           --max-num-seqs 64 \
           --max-num-batched-tokens 16384 \
-          --gpu-memory-utilization 0.75 \
+          --gpu-memory-utilization 0.70 \
           --enable-chunked-prefill \
           --enable-prefix-caching \
           --generation-config vllm \
@@ -140,10 +140,12 @@ services:
         #     this to method:"qwen3_5_mtp" unless you are deliberately running an ablation.
         #   - --kv-cache-dtype auto keeps the KV cache at BF16, which the non-causal DFlash
         #     drafter requires. Do NOT pin --kv-cache-dtype to FP8/NVFP4 with DFlash.
-        #   - --gpu-memory-utilization 0.75 is the default gateway cap when ASR, TTS,
-        #     embedding, or other GPU services share the Spark. If this is the only
-        #     major GPU workload, 0.85 is the long-context production cap; 0.88+ can
-        #     thrash unified memory. (RTX PRO 6000 has more headroom — it caps at 0.94.)
+        #   - --gpu-memory-utilization 0.70 is the SAFE DEFAULT — the Spark's unified
+        #     memory thrashes when over-allocated (slowdowns, agent loops, even engine
+        #     crashes, NOT a clean OOM). 0.70 leaves headroom for co-located ASR/TTS/
+        #     embedding services + the OS. Raise to 0.85 ONLY if the LLM is the sole
+        #     major GPU workload (and watch `free -h`); 0.88+ thrashes unified memory.
+        #     (RTX PRO 6000 has dedicated VRAM and more headroom — it caps at 0.94.)
         #   - --max-num-batched-tokens 16384 is the ceiling. vLLM's inductor compile-range
         #     endpoint is [32768], so above 32k prefill falls back to eager mode.
 
