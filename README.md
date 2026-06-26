@@ -22,6 +22,8 @@ A **fully uncensored, capability-enhanced** abliteration of [Qwen/Qwen3.6-27B](h
 
 ## Quickstart (DGX Spark / GB10) — copy-paste
 
+> ⚠️ **This container is DGX Spark / GB10 only — it is not portable.** `aeon-vllm-ultimate` is built for the Spark's **ARM64 CPU** and GB10's **`sm_121a` NVFP4 kernels**. On an **x86 / amd64 host it will not start** (`/usr/bin/bash: cannot execute binary file` — wrong CPU arch); on a **non-Blackwell GPU** (RTX 4090 / L40S = Ada `sm_89`, A100/H100 = Ampere/Hopper) the **NVFP4 path can't run** (NVFP4 needs Blackwell). **For any hardware other than the DGX Spark, do not pull this container** — instead run the portable [HuggingFace weights](#model-variants) on your *own* vLLM build, picking the right variant + spec-decode method for your GPU from the [Hardware compatibility matrix](#hardware-compatibility-matrix). *(An x86 + Blackwell image may come in a future release.)*
+
 One block: pull the container, pull this model (fresh, the `-Multimodal-NVFP4-MTP-XS` body — see [Model Variants](#model-variants)), pull the DFlash drafter (fresh), then serve with the vetted DGX Spark flags.
 
 ```bash
@@ -307,6 +309,8 @@ The empirically observed "capability damage threshold" in the abliteration liter
 
 The right variant depends on **memory architecture**, not just GPU model. DGX Spark should use the `aeon-vllm-ultimate:latest` DFlash container above; dedicated-VRAM Blackwell can use the MTP variants when the native MTP head is desired.
 
+> **Only the DGX Spark row uses the `aeon-vllm-ultimate` container.** That image is ARM64 + `sm_121a` and runs **only** on the Spark/GB10. **Every other row means: download that weight variant and serve it on your *own* vLLM build** (native to your CPU + GPU arch) — the AEON container is not involved. The "Spec-decode method" column tells you what to configure in your own vLLM.
+
 | Hardware | Recommended variant | Why this exact variant | Spec-decode method |
 |---|---|---|---|
 | **DGX Spark / GB10** *(sm_121a, unified memory)* | 🏆 **[`-Multimodal-NVFP4-MTP-XS`](https://huggingface.co/AEON-7/Qwen3.6-27B-AEON-Ultimate-Uncensored-Multimodal-NVFP4-MTP-XS) body + DFlash + `aeon-vllm-ultimate:latest` image** | Current recommended path. The unified image packages CUTLASS NVFP4, CUDA graphs, the DFlash sliding-window-attention patch (PR #40898), prefix-cache-safe DFlash (PR #41703), Qwen3 reasoning parsing, and Qwen3-Coder tool parsing. Supersedes the old `qwen36-v3/v4/v5` lineage. | DFlash *n=10* via [`z-lab/Qwen3.6-27B-DFlash`](https://huggingface.co/z-lab/Qwen3.6-27B-DFlash) drafter |
@@ -327,7 +331,7 @@ The right variant depends on **memory architecture**, not just GPU model. DGX Sp
 
 The XS body includes a grafted MTP head, but the Spark recipe intentionally uses **external DFlash with `num_speculative_tokens: 10`**. Do not switch the Spark compose file to `method:"qwen3_5_mtp"` unless you are deliberately running an ablation.
 
-> **Why DFlash n=10 and why it holds up at long context:** the z-lab Qwen3.6-27B DFlash drafter is a sliding-window model — 4 of its 5 layers use sliding-window attention (window 2048). vLLM PR #40898 (in `aeon-vllm-ultimate:latest`) runs those layers as proper SWA; earlier images ran them as full attention, so drafting collapsed once context grew past ~2048 tokens. PR #41703 additionally makes `--enable-prefix-caching` corruption-immune with DFlash. Net: long-context drafting holds up; short-context (under 2048 tokens, one window) is unchanged. An **n=8/10/12/15 sweep** on this image found **n=10 optimal for the Spark voice/chat workload** — highest aggregate throughput (≈198 vs 191 tok/s @ c=8) and DFlash acceptance (43% vs 36% for the old 12-token setting) at parity single-stream; the previous 12-token default wins only at very long context. The Mamba layers run with **`--mamba-cache-dtype float32`** (more precise recurrent state + slightly higher acceptance than float16) and **no `--mamba-block-size`** (the default lowers single-stream TTFT from ~230 ms to ~140 ms vs 256, with identical decode). Leave the drafter attention backend at default and do **not** set `--kv-cache-dtype` (the non-causal DFlash drafter requires BF16 KV).
+> **Why DFlash n=10 and why it holds up at long context:** the z-lab Qwen3.6-27B DFlash drafter is a sliding-window model — 4 of its 5 layers use sliding-window attention (window 2048). vLLM PR #40898 (in `aeon-vllm-ultimate:latest`) runs those layers as proper SWA; earlier images ran them as full attention, so drafting collapsed once context grew past ~2048 tokens. PR #41703 additionally makes `--enable-prefix-caching` corruption-immune with DFlash. Net: long-context drafting holds up; short-context (under 2048 tokens, one window) is unchanged. An **n=8/10/12/15 sweep** on this image found **n=10 optimal for the Spark voice/chat workload** — highest aggregate throughput (≈198 vs 191 tok/s @ c=8) and DFlash acceptance (43% vs 36% for the old 12-token setting) at parity single-stream. **n=12 is also crash-correlated** — higher `num_speculative_tokens` widens the spec-decode verify shapes and is associated with the Torch-Inductor / CUDA `device-side assert` crashes some users have reported (see [Troubleshooting](#troubleshooting)); **n=10 is the stable, validated default.** n=12 edges ahead only at very long context, not enough to justify the instability. The Mamba layers run with **`--mamba-cache-dtype float32`** (more precise recurrent state + slightly higher acceptance than float16) and **no `--mamba-block-size`** (the default lowers single-stream TTFT from ~230 ms to ~140 ms vs 256, with identical decode). Leave the drafter attention backend at default and do **not** set `--kv-cache-dtype` (the non-causal DFlash drafter requires BF16 KV).
 
 ### Step 1 — Authenticate to HuggingFace and pull both models
 
@@ -707,6 +711,26 @@ Wielding an uncensored model is genuinely different from wielding an aligned one
 | `--max-num-seqs` | `16` | `32` | 80 GB cards leave ~21 GB for KV after 0.90 utilization. |
 | `--max-num-batched-tokens` | `8192` | `16384` | Safe prefill. |
 | `--gpu-memory-utilization` | `0.90` | `0.90` | Standard for dedicated VRAM (not unified). |
+
+---
+
+## Troubleshooting
+
+Symptom-keyed — match your error string or behavior. **Two checks resolve most reports first:** (1) you're on the current image — the boot banner must read **`vLLM 0.23.0+aeon...`** (not 0.20/0.22; old `qwen36-v3/v4/v5` tags are retired); and (2) you copied the **current** flags — DFlash **`num_speculative_tokens: 10`**, `--max-num-seqs 16`, `--max-num-batched-tokens 16384`, `--gpu-memory-utilization` matched to your box.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| **`/usr/bin/bash: cannot execute binary file`** at start | Image is **ARM64** (DGX Spark); you're on an **x86/amd64 host**. | The container is **Spark-only**. Run the [HF weights](#model-variants) on your own vLLM — see the [Quickstart callout](#quickstart-dgx-spark--gb10--copy-paste). |
+| **Agent loops / repeats tool calls / "no output" / context keeps growing** | Qwen3.6 defaults **thinking ON**; with `--reasoning-parser qwen3` the chain-of-thought streams to the response **`reasoning`** field while **`content` stays empty** until the final answer. Harnesses that read only `content` see "nothing," retry, and loop. | Send **`chat_template_kwargs: {"enable_thinking": false}`** for agentic/tool paths (also faster — thinking isn't DFlash-accelerated), **or** make your client read **both** `reasoning` + `content`. |
+| **Slow / ~11 tok/s / stalls under load** | `--gpu-memory-utilization` too high → GB10 **unified-memory thrash**. | **0.70 if co-located** with ASR/TTS/other GPU services, 0.85 solo, **never >0.88**. |
+| **`CUDA error: device-side assert` / Torch-Inductor `index out of bounds` / EngineCore fatal / "crashes sometimes"** | Spec-decode/Inductor edge correlated with **DFlash n=12** + concurrency; worse on stale images. | Use **n=10** (not 12), the current `:latest`, **`--max-num-seqs 16`**, and add **`--restart unless-stopped`** so an engine fault auto-recovers instead of staying dead. |
+| **DFlash drafter exception (`qwen3_dflash.py`) with tools / `block_table must have shape`** | Block-table padding crash at **concurrency ≥32** on pre-fix images. | Update to current `:latest` (carries the PR #43982 port) and keep **`--max-num-seqs ≤16`**. |
+| **Engine hang: high GPU util, ~0 throughput for hours** | DFlash drafter **acceptance-decay** over long sessions (silent ~6× slowdown), or a stale image. | **Restart** the container (restores acceptance); confirm you're on `:latest`, not `qwen36-v3/v4/v5`. |
+| **`404` model not found** | Calling a name not in your `--served-model-name`. | Use a served name you set (e.g. `aeon-fast`, `qwen36-27b`), or add yours to `--served-model-name`. |
+| **Load fails / `--quantization` error / DFlash won't start** | Missing required flags. | `--quantization modelopt` (XS/MTP bodies) or `compressed-tensors` (NVFP4 body) is **required**; DFlash needs **`--max-num-batched-tokens 16384`**. Do **not** set `--kv-cache-dtype` (BF16 is mandatory). |
+| **"Why is draft acceptance so low?"** | **Expected + content-dependent**, not a bug. | Code/structured ~40–50%, free-form prose / non-English ~15–25%; per-position decays (pos0 ~80% → pos9 ~24%). A flat ~15-slot curve = you're on the **old k=15 image** → update to n=10 on `:latest`. |
+
+For agentic-harness setup (opencode / Cline / aider), the contract that matters is the reasoning/content split above — full detail in [AGENTS.md](AGENTS.md) "Client integration notes."
 
 ---
 
