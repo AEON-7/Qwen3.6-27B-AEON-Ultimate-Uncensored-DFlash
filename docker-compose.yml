@@ -127,7 +127,7 @@ services:
       - --max-num-batched-tokens
       - "16384"
       - --gpu-memory-utilization
-      - "0.85"
+      - "0.70"
       - --enable-chunked-prefill
       - --enable-prefix-caching
       - --load-format
