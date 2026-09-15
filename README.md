@@ -1,3 +1,7 @@
+> [!IMPORTANT]
+> **Prefer Qwen3.8 for new deploys:** [HF NVFP4-MIXED](https://huggingface.co/AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED) · [GitHub recipe card](https://github.com/AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED) (Spark Dynamic DFlash lattice, TP=2, RTX).
+> This Qwen3.6 card remains for existing deployments and history.
+
 <div align="center">
 
 # Qwen3.6-27B-AEON-Ultimate-Uncensored
